@@ -168,8 +168,9 @@ Mental Health, and Student Living.
 
 ## Code review findings (full file reviewed — 1029 lines, nothing truncated)
 
-The audit's "lines 150–879 not yet checked" item is now closed. Findings, in
-priority order — items 1–4 are **fixed**, items 5–7 are **open**:
+The audit's "lines 150–879 not yet checked" item is now closed. All seven
+findings are **fixed**; the notes are kept because several describe traps worth
+not falling into again:
 
 1. ~~Five of 12 topics unreachable~~ — the `$topic_map` gap. Root cause of the
    critical bug in decision 1.
@@ -188,16 +189,29 @@ priority order — items 1–4 are **fixed**, items 5–7 are **open**:
 4. ~~Unconditional `define()` on credentials~~ — would have fired a PHP notice
    once the real key was set in `wp-config.php`, with the wp-config value
    winning by accident rather than design. Now guarded.
-5. **Open — `fq_create_table()` runs on `init`.** A `require_once` of
+5. ~~`fq_create_table()` ran on `init`~~ — a `require_once` of
    `wp-admin/includes/upgrade.php` plus a `CREATE TABLE` on every front-end
-   page load. Should be gated behind a stored version option.
-6. **Open — model output is interpolated into `innerHTML` unescaped.**
-   `renderCards()` puts `title`, `description`, `reason` and `url` straight
-   into markup with no escaping and no scheme check on `href`. Low likelihood,
-   but it is model output reaching the DOM unfiltered.
-7. **Open — rate-limit window re-extends itself.** Every request rewrites the
-   transient with a fresh full TTL, so a busy visitor can be locked out for
-   much longer than the intended window.
+   page load. Now gated behind an `fq_db_version` option, so a normal request
+   costs one autoloaded option read. **Bump `FQ_DB_VERSION` whenever the
+   `CREATE TABLE` statement changes**, or `dbDelta` will never run again.
+6. ~~Model output was interpolated into `innerHTML` unescaped~~ —
+   `renderCards()` put `title`, `description`, `reason` and `url` into a markup
+   string with no escaping and no scheme check on `href`. Now built with DOM
+   APIs and `textContent`, which removes the class of problem rather than
+   escaping each field, plus a guard rejecting any href that isn't plain
+   http(s). **Keep it that way** — reintroducing a template literal here puts
+   model output back into the DOM as markup.
+7. ~~Rate-limit window re-extended itself~~ — every request rewrote the
+   transient with a fresh full TTL, making it "10 requests with no gap longer
+   than the window" rather than "10 per window"; a steady trickle accumulated
+   toward a lockout indefinitely. Now a true fixed window.
+
+   **Unresolved dependency:** the limiter keys on `REMOTE_ADDR`, which behind a
+   CDN or reverse proxy is the proxy's address, not the visitor's — that would
+   pool every visitor into one bucket and lock out the whole site at 10
+   requests. Confirm with DigitalFootprints whether the site is fronted, and
+   if so read the forwarded-for header they set (never trust a client-supplied
+   one).
 
 ## Working style
 

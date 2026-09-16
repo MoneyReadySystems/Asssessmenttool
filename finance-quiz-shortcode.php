@@ -42,6 +42,7 @@ if ( ! defined( 'FQ_MIN_TIME' ) )           define( 'FQ_MIN_TIME',          8 );
 if ( ! defined( 'FQ_TIME_SECRET' ) )        define( 'FQ_TIME_SECRET',       AUTH_KEY );
 if ( ! defined( 'FQ_DESC_WORDS' ) )         define( 'FQ_DESC_WORDS',        10 );
 if ( ! defined( 'FQ_DB_TABLE' ) )           define( 'FQ_DB_TABLE',          'fq_events' ); // without WP prefix — added automatically
+if ( ! defined( 'FQ_DB_VERSION' ) )         define( 'FQ_DB_VERSION',        '1.0' ); // bump when the fq_events schema changes
 if ( ! defined( 'FQ_GA4_MEASUREMENT_ID' ) ) define( 'FQ_GA4_MEASUREMENT_ID','G-XXXXXXXXXX' ); // ⚠️ Replace with your GA4 Measurement ID
 
 // ============================================================
@@ -170,8 +171,27 @@ function fq_create_table() {
     require_once ABSPATH . 'wp-admin/includes/upgrade.php';
     dbDelta( $sql );
 }
-add_action( 'after_switch_theme', 'fq_create_table' );
-add_action( 'init',               'fq_create_table' ); // Ensures table exists on every load
+
+/**
+ * Runs fq_create_table() only when the schema version on record differs from
+ * the one in code.
+ *
+ * The previous version hooked fq_create_table() straight onto `init`, which
+ * meant a require_once of wp-admin/includes/upgrade.php plus a CREATE TABLE
+ * on every single front-end page load. This keeps the same guarantee — the
+ * table is created without anyone having to remember to activate anything —
+ * but the cost on a normal request is one autoloaded option read.
+ *
+ * Bump FQ_DB_VERSION whenever the CREATE TABLE statement above changes, and
+ * dbDelta will apply the difference on the next load.
+ */
+function fq_maybe_create_table() {
+    if ( get_option( 'fq_db_version' ) === FQ_DB_VERSION ) return;
+    fq_create_table();
+    update_option( 'fq_db_version', FQ_DB_VERSION );
+}
+add_action( 'after_switch_theme', 'fq_maybe_create_table' );
+add_action( 'init',               'fq_maybe_create_table' );
  
 // ============================================================
 // ⚙️  SOCIAL MEDIA POSTS
@@ -253,12 +273,38 @@ add_action('save_post', function($post_id, $post) {
 // ============================================================
 // BOT PROTECTION
 // ============================================================
+/**
+ * Fixed-window rate limit, keyed on IP.
+ *
+ * The window's expiry is set once, when the window opens, and is never
+ * extended. The previous version rewrote the full TTL on every request, which
+ * turned this into "10 requests with no gap longer than the window" rather
+ * than "10 requests per window" — a steady trickle of requests just under the
+ * window length accumulated toward a lockout indefinitely, and the lockout
+ * then outlasted its intended duration.
+ *
+ * Note: REMOTE_ADDR is the immediate peer. If DigitalFootprints front the site
+ * with a CDN or reverse proxy, this may be the proxy's address rather than the
+ * visitor's, which would pool all visitors into one bucket. Worth confirming
+ * against their infrastructure before relying on this for abuse protection.
+ */
 function fq_check_rate_limit() {
-    $ip    = sanitize_text_field($_SERVER['REMOTE_ADDR'] ?? 'unknown');
-    $key   = 'fq_rate_' . md5($ip);
-    $count = (int) get_transient($key);
-    if ($count >= FQ_RATE_LIMIT_MAX) return false;
-    set_transient($key, $count + 1, FQ_RATE_LIMIT_WINDOW);
+    $ip  = sanitize_text_field($_SERVER['REMOTE_ADDR'] ?? 'unknown');
+    $key = 'fq_rate_' . md5($ip);
+    $now = time();
+
+    $bucket = get_transient($key);
+    if ( ! is_array($bucket)
+         || ! isset($bucket['start'], $bucket['count'])
+         || ($now - (int) $bucket['start']) >= FQ_RATE_LIMIT_WINDOW ) {
+        $bucket = ['start' => $now, 'count' => 0];
+    }
+
+    if ($bucket['count'] >= FQ_RATE_LIMIT_MAX) return false;
+
+    $bucket['count']++;
+    $remaining = FQ_RATE_LIMIT_WINDOW - ($now - (int) $bucket['start']);
+    set_transient($key, $bucket, max(1, $remaining));
     return true;
 }
 function fq_check_honeypot($data)  { return empty($data['fq_website']); }
@@ -1083,40 +1129,76 @@ function finance_quiz_shortcode() {
       }
       function stopLoading() { clearInterval(loadTimer); }
  
+      // ── URL guard ──
+      // Card hrefs originate in model output. Anything that isn't a plain
+      // http(s) URL is rejected rather than rendered — a `javascript:` href
+      // would otherwise be a clickable link in the results list.
+      function safeHttpUrl(raw) {
+        try {
+          const u = new URL(String(raw||''), window.location.origin);
+          return (u.protocol === 'http:' || u.protocol === 'https:') ? u.href : null;
+        } catch(_) { return null; }
+      }
+
       // ── Render cards + GA4 + DB log + prefetch ──
+      // Built with DOM APIs rather than innerHTML. The previous version
+      // interpolated title, description, reason and url straight into a markup
+      // string, so model output reached the DOM as markup; `textContent`
+      // cannot execute, which removes the whole class of problem instead of
+      // trying to escape each field correctly.
       function renderCards(recs, isFallback, isNoMatch) {
-        const fmt = {article:'📖 Article', video:'▶️ Video', social:'📱 Social post'};
-        document.getElementById('fq-cards').innerHTML = recs.map(r=>`
-          <a class="fq-card" href="${r.url}" target="_blank" rel="noopener"
-             aria-label="${r.title.replace(/"/g,'&quot;')} — ${r.reason.replace(/"/g,'&quot;')} — opens in a new tab"
-             data-title="${r.title.replace(/"/g,'&quot;')}"
-             data-url="${r.url}"
-             data-topic="${(r.topics||[''])[0]}"
-             data-format="${r.format}">
-            <div class="fq-card-reason" aria-hidden="true">${r.reason}</div>
-            <div class="fq-card-title">${r.title}</div>
-            <div class="fq-card-desc">${r.description}</div>
-            <span class="fq-card-fmt" aria-hidden="true">${fmt[r.format]||r.format}</span>
-          </a>`).join('');
- 
-        // Attach click tracking to each card
-        document.querySelectorAll('.fq-card').forEach(card=>{
+        const fmt  = {article:'📖 Article', video:'▶️ Video', social:'📱 Social post'};
+        const wrap = document.getElementById('fq-cards');
+        wrap.textContent = '';
+
+        const rendered = [];
+
+        (recs||[]).forEach(r=>{
+          const href = safeHttpUrl(r.url);
+          if(!href) return;   // drop anything that isn't a real web link
+
+          const title  = String(r.title       || ''),
+                reason = String(r.reason      || ''),
+                desc   = String(r.description || ''),
+                format = String(r.format      || ''),
+                topic  = String((r.topics && r.topics[0]) || '');
+
+          const card = document.createElement('a');
+          card.className = 'fq-card';
+          card.href      = href;
+          card.target    = '_blank';
+          card.rel       = 'noopener';
+          card.setAttribute('aria-label', title + ' — ' + reason + ' — opens in a new tab');
+          card.dataset.title  = title;
+          card.dataset.url    = href;
+          card.dataset.topic  = topic;
+          card.dataset.format = format;
+
+          const part = (tag, cls, text, hidden)=>{
+            const el = document.createElement(tag);
+            el.className   = cls;
+            el.textContent = text;
+            if(hidden) el.setAttribute('aria-hidden','true');
+            return el;
+          };
+          card.appendChild(part('div',  'fq-card-reason', reason,               true));
+          card.appendChild(part('div',  'fq-card-title',  title,               false));
+          card.appendChild(part('div',  'fq-card-desc',   desc,                false));
+          card.appendChild(part('span', 'fq-card-fmt',    fmt[format]||format, true));
+
+          // Click tracking, attached at creation rather than by re-querying
+          // the document afterwards.
           card.addEventListener('click', ()=>{
-            const t = card.dataset.title, u = card.dataset.url,
-                  tp = card.dataset.topic, f = card.dataset.format;
- 
-            // GA4 event
             ga4Event('fq_card_click', {
-              article_title:  t,
-              article_url:    u,
-              article_topic:  tp,
-              article_format: f,
+              article_title:  title,
+              article_url:    href,
+              article_topic:  topic,
+              article_format: format,
               quiz_topics:    ans.topics.join(', '),
               quiz_goal:      ans.goal,
               result_type:    resultType,
             });
- 
-            // Async DB log
+
             dbLog({
               event_type:     'card_click',
               topics:         ans.topics,
@@ -1124,22 +1206,34 @@ function finance_quiz_shortcode() {
               goal:           ans.goal,
               format_pref:    ans.format,
               result_type:    resultType,
-              article_title:  t,
-              article_url:    u,
-              article_topic:  tp,
-              article_format: f,
+              article_title:  title,
+              article_url:    href,
+              article_topic:  topic,
+              article_format: format,
             });
           });
+
+          wrap.appendChild(card);
+          rendered.push(href);
         });
- 
+
         // A no-match is not a connection problem — saying "we had trouble
         // connecting" there would be untrue. Show the honest note instead.
         if(isNoMatch)          document.getElementById('fq-nomatch-note').style.display='block';
         else if(isFallback)    document.getElementById('fq-fallback-note').style.display='block';
- 
-        // Prefetch all recommendation URLs
-        recs.forEach(r=>{ const l=document.createElement('link'); l.rel='prefetch'; l.href=r.url; document.head.appendChild(l); });
- 
+
+        // Every URL failed the guard — don't present an empty results list.
+        if(rendered.length === 0) {
+          const p = document.createElement('p');
+          p.style.cssText  = 'color:#595959;font-size:.9rem';
+          p.textContent    = 'We\'re having trouble loading recommendations right now. Please visit our Learning Hub for our latest content.';
+          wrap.appendChild(p);
+          document.getElementById('fq-fallback-note').style.display='block';
+        }
+
+        // Prefetch, using only the URLs that passed the guard
+        rendered.forEach(u=>{ const l=document.createElement('link'); l.rel='prefetch'; l.href=u; document.head.appendChild(l); });
+
         stopLoading();
         document.getElementById('fq-loading').style.display='none';
         document.getElementById('fq-res-content').style.display='block';
