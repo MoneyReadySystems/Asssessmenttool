@@ -22,21 +22,125 @@
  
 // ============================================================
 // ⚙️  CONFIGURATION
+//
+// Every constant is guarded with `defined()` so that wp-config.php — which
+// loads before themes and plugins — can set any of them without triggering a
+// "constant already defined" notice. Credentials belong in wp-config.php,
+// which is git-ignored. The values below are placeholders and defaults only.
 // ============================================================
-define( 'FQ_API_KEY',           'YOUR_API_KEY_HERE' );
-define( 'FQ_POST_TYPE',         'post' );
-define( 'FQ_TOPIC_TAXONOMY',    'library-topic' );
-define( 'FQ_CACHE_KEY',         'fq_content_library' );
-define( 'FQ_CACHE_DURATION',    HOUR_IN_SECONDS );
-define( 'FQ_ANSWER_CACHE_TTL',  DAY_IN_SECONDS );
-define( 'FQ_RATE_LIMIT_MAX',    10 );
-define( 'FQ_RATE_LIMIT_WINDOW', 10 * MINUTE_IN_SECONDS );
-define( 'FQ_MIN_TIME',          8 );
-define( 'FQ_TIME_SECRET',       AUTH_KEY );
-define( 'FQ_DESC_WORDS',        10 );
-define( 'FQ_DB_TABLE',          'fq_events' ); // without WP prefix — added automatically
-define( 'FQ_GA4_MEASUREMENT_ID','G-XXXXXXXXXX' ); // ⚠️ Replace with your GA4 Measurement ID
- 
+if ( ! defined( 'FQ_API_KEY' ) )            define( 'FQ_API_KEY',           'YOUR_API_KEY_HERE' );
+if ( ! defined( 'FQ_MODEL' ) )              define( 'FQ_MODEL',             'claude-opus-5' );
+if ( ! defined( 'FQ_POST_TYPE' ) )          define( 'FQ_POST_TYPE',         'post' );
+if ( ! defined( 'FQ_TOPIC_TAXONOMY' ) )     define( 'FQ_TOPIC_TAXONOMY',    'library-topic' );
+if ( ! defined( 'FQ_TOPICS_FILE' ) )        define( 'FQ_TOPICS_FILE',       'topics.json' );
+if ( ! defined( 'FQ_CACHE_KEY' ) )          define( 'FQ_CACHE_KEY',         'fq_content_library' );
+if ( ! defined( 'FQ_CACHE_DURATION' ) )     define( 'FQ_CACHE_DURATION',    HOUR_IN_SECONDS );
+if ( ! defined( 'FQ_ANSWER_CACHE_TTL' ) )   define( 'FQ_ANSWER_CACHE_TTL',  DAY_IN_SECONDS );
+if ( ! defined( 'FQ_RATE_LIMIT_MAX' ) )     define( 'FQ_RATE_LIMIT_MAX',    10 );
+if ( ! defined( 'FQ_RATE_LIMIT_WINDOW' ) )  define( 'FQ_RATE_LIMIT_WINDOW', 10 * MINUTE_IN_SECONDS );
+if ( ! defined( 'FQ_MIN_TIME' ) )           define( 'FQ_MIN_TIME',          8 );
+if ( ! defined( 'FQ_TIME_SECRET' ) )        define( 'FQ_TIME_SECRET',       AUTH_KEY );
+if ( ! defined( 'FQ_DESC_WORDS' ) )         define( 'FQ_DESC_WORDS',        10 );
+if ( ! defined( 'FQ_DB_TABLE' ) )           define( 'FQ_DB_TABLE',          'fq_events' ); // without WP prefix — added automatically
+if ( ! defined( 'FQ_DB_VERSION' ) )         define( 'FQ_DB_VERSION',        '1.0' ); // bump when the fq_events schema changes
+if ( ! defined( 'FQ_GA4_MEASUREMENT_ID' ) ) define( 'FQ_GA4_MEASUREMENT_ID','G-XXXXXXXXXX' ); // ⚠️ Replace with your GA4 Measurement ID
+
+// ============================================================
+// TOPIC REGISTRY — single source of truth
+//
+// Reads topics.json (sitting alongside this file) and serves three consumers:
+// the quiz checkboxes, the content library filter, and — in future — the
+// Claude classification prompt for synced social posts.
+//
+// Add a topic by editing topics.json. Nothing here needs changing.
+// ============================================================
+function fq_get_topics() {
+    static $topics = null;
+    if ( $topics !== null ) return $topics;
+
+    $path = __DIR__ . '/' . FQ_TOPICS_FILE;
+    $raw  = is_readable( $path ) ? file_get_contents( $path ) : false;
+    $data = ( $raw !== false ) ? json_decode( $raw, true ) : null;
+
+    if ( ! is_array( $data ) || empty( $data['topics'] ) || ! is_array( $data['topics'] ) ) {
+        error_log( sprintf(
+            '[finance-quiz] Topic registry unreadable or invalid at %s — falling back to the built-in list. The quiz still works but topics.json is being ignored.',
+            $path
+        ) );
+        return $topics = fq_get_fallback_topics();
+    }
+
+    $topics = [];
+    foreach ( $data['topics'] as $t ) {
+        if ( empty( $t['slug'] ) || empty( $t['label'] ) ) continue;
+        // "planned" topics are declared ahead of their content and stay hidden.
+        if ( ( $t['status'] ?? 'live' ) !== 'live' ) continue;
+
+        $topics[] = [
+            'slug'           => (string) $t['slug'],
+            'label'          => (string) $t['label'],
+            'emoji'          => (string) ( $t['emoji'] ?? '' ),
+            'description'    => (string) ( $t['description'] ?? '' ),
+            'taxonomy_terms' => array_values( array_filter( array_map(
+                'strval', (array) ( $t['taxonomy_terms'] ?? [] )
+            ) ) ),
+        ];
+    }
+
+    if ( empty( $topics ) ) {
+        error_log( '[finance-quiz] Topic registry contained no live topics — falling back to the built-in list.' );
+        $topics = fq_get_fallback_topics();
+    }
+    return $topics;
+}
+
+/**
+ * Safety net for a missing or malformed topics.json. Deliberately mirrors the
+ * seven topics the original prototype could actually map, so a broken file
+ * degrades to previous behaviour rather than an empty quiz. Not a substitute
+ * for the file — fix the file.
+ */
+function fq_get_fallback_topics() {
+    $fallback = [
+        ['banking',   'Banking & financial products', '🏦', 'banking'],
+        ['borrowing', 'Borrowing & debt',             '💳', 'borrowing'],
+        ['budgeting', 'Budgeting',                    '💰', 'budgeting'],
+        ['income',    'Income & side hustles',        '🚀', 'earning'],
+        ['saving',    'Saving & investing',           '📈', 'saving'],
+        ['spending',  'Spending smartly',             '🛍️', 'spending'],
+        ['scams',     'Staying safe from scams',      '🔐', 'staying-safe'],
+    ];
+    return array_map( function( $t ) {
+        return [
+            'slug'           => $t[0],
+            'label'          => $t[1],
+            'emoji'          => $t[2],
+            'description'    => '',
+            'taxonomy_terms' => [ $t[3] ],
+        ];
+    }, $fallback );
+}
+
+/** WordPress taxonomy slug => quiz topic slug. Replaces the old $topic_map. */
+function fq_get_taxonomy_map() {
+    $map = [];
+    foreach ( fq_get_topics() as $topic ) {
+        foreach ( $topic['taxonomy_terms'] as $term ) {
+            $map[ $term ] = $topic['slug'];
+        }
+    }
+    return $map;
+}
+
+/**
+ * Library cache key, fingerprinted with the current topic mapping so that
+ * editing topics.json takes effect immediately instead of waiting out the
+ * hourly transient. Both the reader and the save_post invalidator use this.
+ */
+function fq_cache_key() {
+    return FQ_CACHE_KEY . '_' . substr( md5( wp_json_encode( fq_get_taxonomy_map() ) ), 0, 8 );
+}
+
 // ============================================================
 // DATABASE — create table on plugin activation / theme setup
 // ============================================================
@@ -67,8 +171,27 @@ function fq_create_table() {
     require_once ABSPATH . 'wp-admin/includes/upgrade.php';
     dbDelta( $sql );
 }
-add_action( 'after_switch_theme', 'fq_create_table' );
-add_action( 'init',               'fq_create_table' ); // Ensures table exists on every load
+
+/**
+ * Runs fq_create_table() only when the schema version on record differs from
+ * the one in code.
+ *
+ * The previous version hooked fq_create_table() straight onto `init`, which
+ * meant a require_once of wp-admin/includes/upgrade.php plus a CREATE TABLE
+ * on every single front-end page load. This keeps the same guarantee — the
+ * table is created without anyone having to remember to activate anything —
+ * but the cost on a normal request is one autoloaded option read.
+ *
+ * Bump FQ_DB_VERSION whenever the CREATE TABLE statement above changes, and
+ * dbDelta will apply the difference on the next load.
+ */
+function fq_maybe_create_table() {
+    if ( get_option( 'fq_db_version' ) === FQ_DB_VERSION ) return;
+    fq_create_table();
+    update_option( 'fq_db_version', FQ_DB_VERSION );
+}
+add_action( 'after_switch_theme', 'fq_maybe_create_table' );
+add_action( 'init',               'fq_maybe_create_table' );
  
 // ============================================================
 // ⚙️  SOCIAL MEDIA POSTS
@@ -99,7 +222,8 @@ function fq_get_fallbacks() {
 // DYNAMIC LIBRARY
 // ============================================================
 function fq_get_content_library() {
-    $cached = get_transient( FQ_CACHE_KEY );
+    $cache_key = fq_cache_key();
+    $cached    = get_transient( $cache_key );
     if ( $cached !== false ) return $cached;
  
     $posts = get_posts([
@@ -109,15 +233,9 @@ function fq_get_content_library() {
         'tax_query'      => [[ 'taxonomy' => FQ_TOPIC_TAXONOMY, 'operator' => 'EXISTS' ]],
     ]);
  
-    $topic_map = [
-        'banking'      => 'banking',
-        'borrowing'    => 'borrowing',
-        'budgeting'    => 'budgeting',
-        'earning'      => 'income',
-        'saving'       => 'saving',
-        'spending'     => 'spending',
-        'staying-safe' => 'scams',
-    ];
+    // Taxonomy slug => quiz topic slug, from topics.json rather than a
+    // hardcoded array that silently covered only 7 of the 12 quiz topics.
+    $topic_map = fq_get_taxonomy_map();
  
     $library = [];
     foreach ( $posts as $post ) {
@@ -142,25 +260,51 @@ function fq_get_content_library() {
         ];
     }
     $library = array_merge($library, fq_get_social_posts());
-    set_transient(FQ_CACHE_KEY, $library, FQ_CACHE_DURATION);
+    set_transient($cache_key, $library, FQ_CACHE_DURATION);
     return $library;
 }
  
 add_action('save_post', function($post_id, $post) {
     if ($post->post_type === FQ_POST_TYPE && $post->post_status === 'publish') {
-        delete_transient(FQ_CACHE_KEY);
+        delete_transient(fq_cache_key());
     }
 }, 10, 2);
  
 // ============================================================
 // BOT PROTECTION
 // ============================================================
+/**
+ * Fixed-window rate limit, keyed on IP.
+ *
+ * The window's expiry is set once, when the window opens, and is never
+ * extended. The previous version rewrote the full TTL on every request, which
+ * turned this into "10 requests with no gap longer than the window" rather
+ * than "10 requests per window" — a steady trickle of requests just under the
+ * window length accumulated toward a lockout indefinitely, and the lockout
+ * then outlasted its intended duration.
+ *
+ * Note: REMOTE_ADDR is the immediate peer. If DigitalFootprints front the site
+ * with a CDN or reverse proxy, this may be the proxy's address rather than the
+ * visitor's, which would pool all visitors into one bucket. Worth confirming
+ * against their infrastructure before relying on this for abuse protection.
+ */
 function fq_check_rate_limit() {
-    $ip    = sanitize_text_field($_SERVER['REMOTE_ADDR'] ?? 'unknown');
-    $key   = 'fq_rate_' . md5($ip);
-    $count = (int) get_transient($key);
-    if ($count >= FQ_RATE_LIMIT_MAX) return false;
-    set_transient($key, $count + 1, FQ_RATE_LIMIT_WINDOW);
+    $ip  = sanitize_text_field($_SERVER['REMOTE_ADDR'] ?? 'unknown');
+    $key = 'fq_rate_' . md5($ip);
+    $now = time();
+
+    $bucket = get_transient($key);
+    if ( ! is_array($bucket)
+         || ! isset($bucket['start'], $bucket['count'])
+         || ($now - (int) $bucket['start']) >= FQ_RATE_LIMIT_WINDOW ) {
+        $bucket = ['start' => $now, 'count' => 0];
+    }
+
+    if ($bucket['count'] >= FQ_RATE_LIMIT_MAX) return false;
+
+    $bucket['count']++;
+    $remaining = FQ_RATE_LIMIT_WINDOW - ($now - (int) $bucket['start']);
+    set_transient($key, $bucket, max(1, $remaining));
     return true;
 }
 function fq_check_honeypot($data)  { return empty($data['fq_website']); }
@@ -279,21 +423,87 @@ function fq_proxy_handler() {
     }
  
     $library = fq_get_content_library();
+
+    // Topic pre-filter.
+    //
+    // The previous version had two faults that compounded each other. It
+    // counted `level: all` items as topic matches, which hid genuine no-match
+    // cases; and when it found fewer than 6 items it discarded the filter
+    // entirely and passed the WHOLE library to Claude. Someone selecting only
+    // "Pensions" therefore received confident recommendations chosen from a
+    // pool containing nothing about pensions.
+    //
+    // Now: real matches are identified on their own, a thin set is padded with
+    // general-interest content without displacing the real matches, and a
+    // genuine empty result is reported honestly instead of being papered over.
     if (!empty($topic_list)) {
-        $filtered = array_values(array_filter($library, function($item) use ($topic_list) {
-            return !empty(array_intersect($item['topics'], $topic_list)) || (($item['level'] ?? '') === 'all');
+        $matched = array_values(array_filter($library, function($item) use ($topic_list) {
+            return !empty(array_intersect((array)($item['topics'] ?? []), $topic_list));
         }));
-        $library = count($filtered) >= 6 ? $filtered : $library;
+
+        if (empty($matched)) {
+            wp_send_json_success([
+                'recs'     => fq_get_fallbacks(),
+                'fallback' => true,
+                'no_match' => true,
+            ]);
+        }
+
+        if (count($matched) < 6) {
+            $matched_urls = array_column($matched, 'url');
+            $general = array_values(array_filter($library, function($item) use ($matched_urls) {
+                return ($item['level'] ?? '') === 'all'
+                    && !in_array($item['url'], $matched_urls, true);
+            }));
+            $matched = array_merge($matched, array_slice($general, 0, 6 - count($matched)));
+        }
+
+        $library = $matched;
     }
  
     $prompt_library = fq_truncate_for_prompt($library);
+
+    // Ask for a number the library can actually support. Requesting "3–5" from
+    // a shortlist of 2 invites the model to pad with irrelevant items.
+    $max_recs = max(1, min(5, count($prompt_library)));
+    $min_recs = min(3, $max_recs);
+    $how_many = ($min_recs === $max_recs)
+        ? "Recommend the {$max_recs} most relevant item(s)"
+        : "Recommend between {$min_recs} and {$max_recs} of the MOST relevant items";
+
     $prompt = "You are a financial education content recommender for Money Ready, a UK financial education charity.\n"
-            . "Recommend 3–5 of the MOST relevant items from the library below based on the user's quiz answers.\n"
-            . "Return ONLY a valid JSON array — no markdown, no explanation.\n\n"
+            . "{$how_many} from the library below, based on the user's quiz answers.\n"
+            . "Only recommend items that appear in the library. Never invent a title or a URL.\n"
+            . "Copy each url exactly as it appears in the library.\n\n"
             . "USER ANSWERS:\n- Topics: {$topics}\n- Knowledge level: {$experience}\n- Goal: {$goal}\n- Preferred format: {$format}\n\n"
-            . "CONTENT LIBRARY:\n" . json_encode($prompt_library) . "\n\n"
-            . 'Return format: [{"title":"...","url":"...","description":"...","format":"...","reason":"One sentence why this suits the user"}]';
- 
+            . "CONTENT LIBRARY:\n" . wp_json_encode($prompt_library);
+
+    // Structured output. The prototype asked for JSON in prose, stripped
+    // markdown fences with a regex and hoped the result parsed; a schema makes
+    // malformed output a non-issue. Only `reason` is actually used from the
+    // response — title, description, format and topics are re-injected from the
+    // library below, so they cannot drift from what we hold.
+    $schema = [
+        'type'       => 'object',
+        'properties' => [
+            'recommendations' => [
+                'type'  => 'array',
+                'items' => [
+                    'type'       => 'object',
+                    'properties' => [
+                        'url'    => ['type' => 'string', 'description' => 'Must exactly match a url from the library.'],
+                        'title'  => ['type' => 'string', 'description' => 'The library title for that url.'],
+                        'reason' => ['type' => 'string', 'description' => 'One short sentence on why this suits the user.'],
+                    ],
+                    'required'             => ['url', 'title', 'reason'],
+                    'additionalProperties' => false,
+                ],
+            ],
+        ],
+        'required'             => ['recommendations'],
+        'additionalProperties' => false,
+    ];
+
     $response = wp_remote_post('https://api.anthropic.com/v1/messages', [
         'timeout' => 20,
         'headers' => [
@@ -301,33 +511,76 @@ function fq_proxy_handler() {
             'x-api-key'         => FQ_API_KEY,
             'anthropic-version' => '2023-06-01',
         ],
-        'body' => json_encode([
-            'model'      => 'claude-sonnet-4-20250514',
-            'max_tokens' => 1000,
-            'messages'   => [['role' => 'user', 'content' => $prompt]],
+        'body' => wp_json_encode([
+            'model'         => FQ_MODEL,
+            'max_tokens'    => 2000,
+            'output_config' => [
+                // Picking a few items from a shortlist is not hard reasoning,
+                // and a visitor is watching a spinner against a 20s timeout.
+                'effort' => 'low',
+                'format' => ['type' => 'json_schema', 'schema' => $schema],
+            ],
+            'messages'      => [['role' => 'user', 'content' => $prompt]],
         ]),
     ]);
- 
+
     if (is_wp_error($response)) {
+        error_log('[finance-quiz] Anthropic request failed: ' . $response->get_error_message());
         wp_send_json_success(['recs' => fq_get_fallbacks(), 'fallback' => true]);
     }
- 
+
+    $status = (int) wp_remote_retrieve_response_code($response);
+    if ($status !== 200) {
+        error_log(sprintf('[finance-quiz] Anthropic API returned HTTP %d: %s', $status, wp_remote_retrieve_body($response)));
+        wp_send_json_success(['recs' => fq_get_fallbacks(), 'fallback' => true]);
+    }
+
     $body = json_decode(wp_remote_retrieve_body($response), true);
-    $text = preg_replace('/```json|```/', '', $body['content'][0]['text'] ?? '');
-    $recs = json_decode(trim($text), true);
- 
+
+    if (($body['stop_reason'] ?? '') === 'max_tokens') {
+        error_log('[finance-quiz] Anthropic response hit max_tokens — JSON likely truncated. Consider raising max_tokens.');
+    }
+
+    // Find the first text block rather than assuming content[0]. Thinking is on
+    // by default on current models, so content[0] may be a thinking block —
+    // the prototype's `$body['content'][0]['text']` would have returned null.
+    $text = '';
+    foreach ((array)($body['content'] ?? []) as $block) {
+        if (($block['type'] ?? '') === 'text') { $text = (string)($block['text'] ?? ''); break; }
+    }
+    $parsed = json_decode($text, true);
+    $recs   = is_array($parsed) ? ($parsed['recommendations'] ?? null) : null;
+
     if (!is_array($recs) || count($recs) === 0) {
+        error_log('[finance-quiz] Could not read recommendations from the Anthropic response.');
         wp_send_json_success(['recs' => fq_get_fallbacks(), 'fallback' => true]);
     }
- 
+
+    // Re-key every field against the library. This does three jobs at once:
+    // drops any recommendation whose URL we do not hold (a hallucinated link
+    // would otherwise be rendered as a real card), restores the untruncated
+    // description, and supplies `topics` and `format` — which the prototype
+    // never returned, leaving article_topic empty in every analytics row.
     $url_map = array_column($library, null, 'url');
-    $recs = array_map(function($rec) use ($url_map) {
-        if (isset($url_map[$rec['url']]['description'])) {
-            $rec['description'] = $url_map[$rec['url']]['description'];
-        }
-        return $rec;
-    }, $recs);
- 
+    $recs = array_values(array_filter(array_map(function($rec) use ($url_map) {
+        $url = (string)($rec['url'] ?? '');
+        if (!isset($url_map[$url])) return null;
+        $src = $url_map[$url];
+        return [
+            'title'       => $src['title'],
+            'url'         => $src['url'],
+            'description' => $src['description'],
+            'format'      => $src['format'] ?? 'article',
+            'topics'      => (array)($src['topics'] ?? []),
+            'reason'      => (string)($rec['reason'] ?? ''),
+        ];
+    }, $recs)));
+
+    if (empty($recs)) {
+        error_log('[finance-quiz] Every recommended URL was absent from the library — discarding and serving fallbacks.');
+        wp_send_json_success(['recs' => fq_get_fallbacks(), 'fallback' => true]);
+    }
+
     set_transient($ans_cache_key, $recs, FQ_ANSWER_CACHE_TTL);
     wp_send_json_success(['recs' => $recs, 'fallback' => false]);
 }
@@ -427,7 +680,9 @@ function fq_analytics_page() {
         'start-investing'=>'Start investing','buy-home'=>'Buy or rent a home',
         'earn-more'=>'Earn more / side income','general'=>'General wellbeing',
     ];
-    $result_labels = ['ai'=>'AI generated','cached'=>'Cached','fallback'=>'Fallback'];
+    // 'no_match' surfaces content gaps: a high count here means visitors are
+    // asking for topics the library cannot answer yet. Useful for planning.
+    $result_labels = ['ai'=>'AI generated','cached'=>'Cached','fallback'=>'Fallback','no_match'=>'No matching content'];
  
     ?>
     <div class="wrap">
@@ -687,24 +942,16 @@ function finance_quiz_shortcode() {
           <p id="fq-hint-1" class="fq-hint">Select all that apply</p>
           <div class="fq-opts fq-2col" aria-describedby="fq-hint-1">
             <?php
-            $topics = [
-              'banking'      => '🏦 Banking &amp; financial products',
-              'borrowing'    => '💳 Borrowing &amp; debt',
-              'budgeting'    => '💰 Budgeting',
-              'income'       => '🚀 Income &amp; side hustles',
-              'insurance'    => '🛡️ Insurance',
-              'mental-health'=> '🧠 Money &amp; Mental Health',
-              'pensions'     => '🏖️ Pensions',
-              'property'     => '🏡 Renting &amp; mortgages',
-              'saving'       => '📈 Saving &amp; investing',
-              'spending'     => '🛍️ Spending smartly',
-              'scams'        => '🔐 Staying safe from scams',
-              'student'      => '🎓 Student living',
-            ];
-            foreach ($topics as $val => $label): ?>
+            // Checkboxes come from topics.json — the same source the library
+            // filter and the classification prompt read. Display order follows
+            // the order of that file.
+            foreach (fq_get_topics() as $topic):
+              $val   = $topic['slug'];
+              $label = trim($topic['emoji'] . ' ' . $topic['label']);
+            ?>
               <div class="fq-input-option">
                 <input type="checkbox" id="fq-topic-<?php echo esc_attr($val); ?>" name="fq-topics" value="<?php echo esc_attr($val); ?>" />
-                <label for="fq-topic-<?php echo esc_attr($val); ?>" class="fq-opt-label"><?php echo $label; ?></label>
+                <label for="fq-topic-<?php echo esc_attr($val); ?>" class="fq-opt-label"><?php echo esc_html($label); ?></label>
               </div>
             <?php endforeach; ?>
           </div>
@@ -772,6 +1019,9 @@ function finance_quiz_shortcode() {
           <p class="fq-sub">Based on your answers, here's where we'd suggest you start:</p>
           <div id="fq-fallback-note" class="fq-fallback-note" role="alert" style="display:none">
             ⚡ We had trouble connecting right now, so here are our top picks for you. Try again later for fully personalised recommendations!
+          </div>
+          <div id="fq-nomatch-note" class="fq-fallback-note" role="alert" style="display:none">
+            📭 We don't have anything on those topics just yet — we're adding new content all the time. In the meantime, here are some of our most popular guides.
           </div>
           <div class="fq-cards" id="fq-cards" aria-live="polite"></div>
           <div class="fq-cta">
@@ -879,40 +1129,76 @@ function finance_quiz_shortcode() {
       }
       function stopLoading() { clearInterval(loadTimer); }
  
+      // ── URL guard ──
+      // Card hrefs originate in model output. Anything that isn't a plain
+      // http(s) URL is rejected rather than rendered — a `javascript:` href
+      // would otherwise be a clickable link in the results list.
+      function safeHttpUrl(raw) {
+        try {
+          const u = new URL(String(raw||''), window.location.origin);
+          return (u.protocol === 'http:' || u.protocol === 'https:') ? u.href : null;
+        } catch(_) { return null; }
+      }
+
       // ── Render cards + GA4 + DB log + prefetch ──
-      function renderCards(recs, isFallback) {
-        const fmt = {article:'📖 Article', video:'▶️ Video', social:'📱 Social post'};
-        document.getElementById('fq-cards').innerHTML = recs.map(r=>`
-          <a class="fq-card" href="${r.url}" target="_blank" rel="noopener"
-             aria-label="${r.title.replace(/"/g,'&quot;')} — ${r.reason.replace(/"/g,'&quot;')} — opens in a new tab"
-             data-title="${r.title.replace(/"/g,'&quot;')}"
-             data-url="${r.url}"
-             data-topic="${(r.topics||[''])[0]}"
-             data-format="${r.format}">
-            <div class="fq-card-reason" aria-hidden="true">${r.reason}</div>
-            <div class="fq-card-title">${r.title}</div>
-            <div class="fq-card-desc">${r.description}</div>
-            <span class="fq-card-fmt" aria-hidden="true">${fmt[r.format]||r.format}</span>
-          </a>`).join('');
- 
-        // Attach click tracking to each card
-        document.querySelectorAll('.fq-card').forEach(card=>{
+      // Built with DOM APIs rather than innerHTML. The previous version
+      // interpolated title, description, reason and url straight into a markup
+      // string, so model output reached the DOM as markup; `textContent`
+      // cannot execute, which removes the whole class of problem instead of
+      // trying to escape each field correctly.
+      function renderCards(recs, isFallback, isNoMatch) {
+        const fmt  = {article:'📖 Article', video:'▶️ Video', social:'📱 Social post'};
+        const wrap = document.getElementById('fq-cards');
+        wrap.textContent = '';
+
+        const rendered = [];
+
+        (recs||[]).forEach(r=>{
+          const href = safeHttpUrl(r.url);
+          if(!href) return;   // drop anything that isn't a real web link
+
+          const title  = String(r.title       || ''),
+                reason = String(r.reason      || ''),
+                desc   = String(r.description || ''),
+                format = String(r.format      || ''),
+                topic  = String((r.topics && r.topics[0]) || '');
+
+          const card = document.createElement('a');
+          card.className = 'fq-card';
+          card.href      = href;
+          card.target    = '_blank';
+          card.rel       = 'noopener';
+          card.setAttribute('aria-label', title + ' — ' + reason + ' — opens in a new tab');
+          card.dataset.title  = title;
+          card.dataset.url    = href;
+          card.dataset.topic  = topic;
+          card.dataset.format = format;
+
+          const part = (tag, cls, text, hidden)=>{
+            const el = document.createElement(tag);
+            el.className   = cls;
+            el.textContent = text;
+            if(hidden) el.setAttribute('aria-hidden','true');
+            return el;
+          };
+          card.appendChild(part('div',  'fq-card-reason', reason,               true));
+          card.appendChild(part('div',  'fq-card-title',  title,               false));
+          card.appendChild(part('div',  'fq-card-desc',   desc,                false));
+          card.appendChild(part('span', 'fq-card-fmt',    fmt[format]||format, true));
+
+          // Click tracking, attached at creation rather than by re-querying
+          // the document afterwards.
           card.addEventListener('click', ()=>{
-            const t = card.dataset.title, u = card.dataset.url,
-                  tp = card.dataset.topic, f = card.dataset.format;
- 
-            // GA4 event
             ga4Event('fq_card_click', {
-              article_title:  t,
-              article_url:    u,
-              article_topic:  tp,
-              article_format: f,
+              article_title:  title,
+              article_url:    href,
+              article_topic:  topic,
+              article_format: format,
               quiz_topics:    ans.topics.join(', '),
               quiz_goal:      ans.goal,
               result_type:    resultType,
             });
- 
-            // Async DB log
+
             dbLog({
               event_type:     'card_click',
               topics:         ans.topics,
@@ -920,19 +1206,34 @@ function finance_quiz_shortcode() {
               goal:           ans.goal,
               format_pref:    ans.format,
               result_type:    resultType,
-              article_title:  t,
-              article_url:    u,
-              article_topic:  tp,
-              article_format: f,
+              article_title:  title,
+              article_url:    href,
+              article_topic:  topic,
+              article_format: format,
             });
           });
+
+          wrap.appendChild(card);
+          rendered.push(href);
         });
- 
-        if(isFallback) document.getElementById('fq-fallback-note').style.display='block';
- 
-        // Prefetch all recommendation URLs
-        recs.forEach(r=>{ const l=document.createElement('link'); l.rel='prefetch'; l.href=r.url; document.head.appendChild(l); });
- 
+
+        // A no-match is not a connection problem — saying "we had trouble
+        // connecting" there would be untrue. Show the honest note instead.
+        if(isNoMatch)          document.getElementById('fq-nomatch-note').style.display='block';
+        else if(isFallback)    document.getElementById('fq-fallback-note').style.display='block';
+
+        // Every URL failed the guard — don't present an empty results list.
+        if(rendered.length === 0) {
+          const p = document.createElement('p');
+          p.style.cssText  = 'color:#595959;font-size:.9rem';
+          p.textContent    = 'We\'re having trouble loading recommendations right now. Please visit our Learning Hub for our latest content.';
+          wrap.appendChild(p);
+          document.getElementById('fq-fallback-note').style.display='block';
+        }
+
+        // Prefetch, using only the URLs that passed the guard
+        rendered.forEach(u=>{ const l=document.createElement('link'); l.rel='prefetch'; l.href=u; document.head.appendChild(l); });
+
         stopLoading();
         document.getElementById('fq-loading').style.display='none';
         document.getElementById('fq-res-content').style.display='block';
@@ -947,6 +1248,7 @@ function finance_quiz_shortcode() {
         document.getElementById('fq-loading').style.display='block';
         document.getElementById('fq-res-content').style.display='none';
         document.getElementById('fq-fallback-note').style.display='none';
+        document.getElementById('fq-nomatch-note').style.display='none';
         startLoading();
  
         const controller = new AbortController();
@@ -961,8 +1263,10 @@ function finance_quiz_shortcode() {
           clearTimeout(timer);
           const data = await res.json();
           if(data.success && data.data?.recs?.length) {
-            resultType = data.data.fallback ? 'fallback' : (data.data.cached ? 'cached' : 'ai');
-            renderCards(data.data.recs, data.data.fallback===true);
+            resultType = data.data.no_match ? 'no_match'
+                       : data.data.fallback ? 'fallback'
+                       : data.data.cached   ? 'cached' : 'ai';
+            renderCards(data.data.recs, data.data.fallback===true, data.data.no_match===true);
  
             // GA4: quiz completion
             ga4Event('fq_quiz_complete', {

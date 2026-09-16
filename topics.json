@@ -1,0 +1,143 @@
+{
+  "_README": [
+    "Single source of truth for the quiz's topic vocabulary.",
+    "Read by three things: the quiz checkboxes, the content library filter, and",
+    "the Claude classification prompt for incoming social posts.",
+    "",
+    "HOW TO ADD A TOPIC",
+    "  1. Copy an existing block in \"topics\" below and change the values.",
+    "  2. Set \"status\" to \"planned\" until content exists for it (see below).",
+    "  3. Put the WordPress library-topic tag slugs in \"taxonomy_terms\".",
+    "  4. Save. Nothing else needs changing — the quiz picks it up.",
+    "",
+    "FIELDS",
+    "  slug            Internal id. Never change once live — analytics rows",
+    "                  already recorded against it would stop matching.",
+    "  label           What visitors see on the quiz checkbox.",
+    "  emoji           Shown before the label.",
+    "  status          \"live\"    = offered in the quiz",
+    "                  \"planned\" = declared but hidden, for topics we intend to",
+    "                              cover before any content exists",
+    "  taxonomy_terms  WordPress library-topic tag slugs that count as this",
+    "                  topic. Several may map to one topic. An empty list means",
+    "                  no articles can match — only social posts.",
+    "  description     One sentence, written for Claude, describing what belongs",
+    "                  in this topic. Used when classifying social posts.",
+    "",
+    "CARE POINTS",
+    "  - This must stay valid JSON. No trailing commas, no // comments. If it",
+    "    breaks, the quiz falls back to a built-in list and logs a warning",
+    "    rather than white-screening — but the file is then being ignored.",
+    "  - Display order in the quiz follows the order of this file.",
+    "  - taxonomy_terms values are UNVERIFIED against the live site. They were",
+    "    inferred from the prototype's old mapping, which covered only 7 of 12",
+    "    topics. The five marked \"needs_verification\" are guesses and must be",
+    "    checked against the real taxonomy once the local WordPress copy exists."
+  ],
+
+  "version": 1,
+
+  "topics": [
+    {
+      "slug": "banking",
+      "label": "Banking & financial products",
+      "emoji": "🏦",
+      "status": "live",
+      "taxonomy_terms": ["banking"],
+      "description": "Current and savings accounts, choosing between financial products, interest rates, and dealing with banks."
+    },
+    {
+      "slug": "borrowing",
+      "label": "Borrowing & debt",
+      "emoji": "💳",
+      "status": "live",
+      "taxonomy_terms": ["borrowing"],
+      "description": "Loans, credit cards, overdrafts, credit scores, debt repayment and getting help with problem debt."
+    },
+    {
+      "slug": "budgeting",
+      "label": "Budgeting",
+      "emoji": "💰",
+      "status": "live",
+      "taxonomy_terms": ["budgeting"],
+      "description": "Planning where money goes, tracking spending, managing bills and building a budget that holds."
+    },
+    {
+      "slug": "income",
+      "label": "Income & side hustles",
+      "emoji": "🚀",
+      "status": "live",
+      "taxonomy_terms": ["earning"],
+      "description": "Wages and payslips, tax on earnings, side income, freelancing and increasing what you earn."
+    },
+    {
+      "slug": "insurance",
+      "label": "Insurance",
+      "emoji": "🛡️",
+      "status": "live",
+      "taxonomy_terms": [],
+      "needs_verification": true,
+      "description": "Cover for home, contents, travel, car, life and health — what it does and whether it is worth it."
+    },
+    {
+      "slug": "mental-health",
+      "label": "Money & Mental Health",
+      "emoji": "🧠",
+      "status": "live",
+      "taxonomy_terms": [],
+      "needs_verification": true,
+      "description": "The two-way link between money worries and mental wellbeing, money anxiety, and where to get support."
+    },
+    {
+      "slug": "pensions",
+      "label": "Pensions",
+      "emoji": "🏖️",
+      "status": "live",
+      "taxonomy_terms": [],
+      "needs_verification": true,
+      "description": "Workplace and personal pensions, auto-enrolment, contributions and planning for retirement."
+    },
+    {
+      "slug": "property",
+      "label": "Renting & mortgages",
+      "emoji": "🏡",
+      "status": "live",
+      "taxonomy_terms": [],
+      "needs_verification": true,
+      "description": "Renting, deposits, tenancy rights, saving for a first home, mortgages and the costs of moving."
+    },
+    {
+      "slug": "saving",
+      "label": "Saving & investing",
+      "emoji": "📈",
+      "status": "live",
+      "taxonomy_terms": ["saving"],
+      "description": "Building savings, emergency funds, ISAs, compound interest and getting started with investing."
+    },
+    {
+      "slug": "spending",
+      "label": "Spending smartly",
+      "emoji": "🛍️",
+      "status": "live",
+      "taxonomy_terms": ["spending"],
+      "description": "Making money go further, avoiding overspending, impulse buying, subscriptions and cost of living."
+    },
+    {
+      "slug": "scams",
+      "label": "Staying safe from scams",
+      "emoji": "🔐",
+      "status": "live",
+      "taxonomy_terms": ["staying-safe"],
+      "description": "Recognising scams and fraud, phishing, protecting personal data and what to do if targeted."
+    },
+    {
+      "slug": "student",
+      "label": "Student living",
+      "emoji": "🎓",
+      "status": "live",
+      "taxonomy_terms": [],
+      "needs_verification": true,
+      "description": "Student loans and finance, budgeting at university, student housing and managing money while studying."
+    }
+  ]
+}

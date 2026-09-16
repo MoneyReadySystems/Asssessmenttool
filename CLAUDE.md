@@ -26,16 +26,35 @@ Mental Health, and Student Living.
 
 ## Architectural decisions from the audit (already made — build to these)
 
-1. **Single source of truth for topics.** Replace the hardcoded `$topic_map`
-   array (in the current prototype) and the hardcoded social posts array with
-   a WordPress custom post type ("topics" table). This one source should drive:
+1. **Single source of truth for topics — a version-controlled `topics.json`
+   file.** Replace the hardcoded `$topic_map` array *and* the hardcoded quiz
+   checkbox list with one JSON file sitting alongside the PHP. This one file
+   drives all three consumers:
    - the quiz UI checkboxes
    - the content library filter
    - the Claude classification prompt
-   **Why:** the current `$topic_map` only covers 7 of the 12 quiz topics —
-   Insurance, Pensions, Renting & Mortgages, Money & Mental Health, and Student
-   Living are silently excluded from recommendations. This is a critical bug,
-   not a style preference.
+
+   **Why a file and not a database table:** topics change rarely but need to be
+   added ahead of the content that answers them, the file is diffable in git so
+   topic changes are visible in history, and it works today without a local
+   WordPress install. Each entry declares the WordPress `library-topic`
+   taxonomy slugs it maps to, which is what makes the article side work without
+   re-tagging anything.
+
+   **Why at all:** the current `$topic_map` only covers 7 of the 12 quiz topics
+   — Insurance, Pensions, Renting & Mortgages, Money & Mental Health, and
+   Student Living are silently excluded from recommendations. This is a
+   critical bug, not a style preference.
+
+   **Neither articles nor social posts are ever hardcoded.** Articles come live
+   from WordPress, tagged on creation with `library-topic` terms. Social posts
+   come from the nightly Buffer sync (decision 2). `topics.json` holds only the
+   *vocabulary* — the topic names and how they map — never content.
+
+   **Superseded:** the original audit proposed a WordPress custom post type for
+   topics. A CPT is the wrong tool for a small, stable vocabulary that has to
+   be editable before WordPress access exists. The CPT idea moves to decision 2,
+   where it stores incoming social posts — which is what post types are for.
 
 2. **Automated social post ingestion.** Use the **Buffer API** on a daily
    WP-Cron sync job, instead of hardcoding posts (`fq_get_social_posts()`) or
@@ -43,11 +62,23 @@ Mental Health, and Student Living.
    including free. Metricool was considered and rejected — not required for
    this project.
 
+   **Storage:** each synced post becomes one entry in a `fq_social_post`
+   **custom post type**, tagged with the same `library-topic` taxonomy terms
+   the articles use, plus a meta field holding its classification status. This
+   gives a WordPress admin screen for the review queue for free, and means the
+   library filter treats articles and social posts identically instead of
+   merging two different shapes.
+
 3. **Claude-assisted classification.** At sync time, use Claude to classify
    each new social post as learning content or not, using a **three-state
    status**: `classified`, `needs_review`, `excluded`. Nothing enters the
    recommendation pool without either Claude's confidence or explicit human
    sign-off.
+
+   The classification prompt reads its list of valid topics — and each topic's
+   one-line description — from `topics.json` (decision 1), so a topic added to
+   that file immediately becomes available to the classifier. Claude never
+   invents topic names.
 
 4. **Session tracking.** Add a first-party cookie session ID so post-quiz
    learner journeys can be tracked across Learning Hub pages (extends the
@@ -71,9 +102,18 @@ Mental Health, and Student Living.
 
 ## Existing system behaviour worth knowing before changing anything
 
-- The **content library** is a merged result of a live `WP_Query` against a
-  custom taxonomy, plus (currently) a hardcoded social posts array — cached
-  hourly, invalidated automatically on post publish.
+- The **content library** is a merged result of a live `WP_Query` against the
+  `library-topic` custom taxonomy, plus (currently) a hardcoded social posts
+  array — cached hourly, invalidated automatically on post publish.
+- **The taxonomy slugs do not match the quiz values.** The taxonomy uses
+  `earning` and `staying-safe` where the quiz uses `income` and `scams`. That
+  translation is exactly what `$topic_map` existed to paper over, and is why
+  topics could fall off the end unnoticed. `topics.json` now declares the
+  mapping explicitly instead.
+- **Unverified until the local WordPress copy exists:** whether `library-topic`
+  actually has terms for the five missing topics, or whether they were never
+  created. If they don't exist, someone has to create them and retro-tag
+  existing Learning Hub articles — a content job, not a code job.
 - The **answer cache** is keyed by MD5 hash of quiz answers (topics + goal +
   confidence + format), 24-hour TTL, shared across all visitors with identical
   answers — not per-user.
@@ -90,15 +130,88 @@ Mental Health, and Student Living.
 - **Local WordPress environment** for development
 - **DigitalFootprints staging environment** for pre-launch testing
 
+## Claude API integration choices
+
+1. **Model: `claude-opus-5`.** The prototype pinned `claude-sonnet-4-20250514`.
+2. **Transport: `wp_remote_post`, not the official PHP SDK.** The SDK would
+   normally be the default, but it needs a Composer autoloader, which is a
+   deployment change DigitalFootprints would have to accommodate inside a
+   WordPress theme. `wp_remote_post` is the WordPress-idiomatic HTTP call and
+   respects site-level proxy and filter config. Revisit if the project ever
+   becomes a properly packaged plugin.
+3. **Structured outputs, not regex.** The prototype stripped markdown fences
+   with `preg_replace` and hoped the result parsed. Requests now send a
+   JSON schema via `output_config.format`, so malformed output isn't a
+   failure mode.
+4. **Effort `low`.** Selecting a handful of items from a shortlist is not a
+   hard reasoning task, and a visitor is watching a spinner against a 20s
+   server timeout. If staging shows latency is still too high, dropping to
+   `claude-sonnet-5` or `claude-haiku-4-5` is a deliberate cost/quality
+   decision for Ruth to make, not an automatic one.
+
 ## Open items (not yet done)
 
-- Full code review of the PHP shortcode file, specifically lines 150–879
-  (truncated middle section), against the spec documents — not yet checked
-  line-by-line
-- Implement the four architectural decisions above
+- Implement the four architectural decisions above. Decisions 2 and 4 are
+  blocked on assets not yet available (Buffer account access; local WordPress
+  copy including the Learning Hub).
 - Set real values for `FQ_API_KEY` and `FQ_GA4_MEASUREMENT_ID`
   (currently `YOUR_API_KEY_HERE` / `G-XXXXXXXXXX` placeholders)
 - Deploy to and test on the DigitalFootprints staging environment
+- **Raise with DigitalFootprints before staging:** page caching will break this
+  tool. The nonce and the anti-bot timing token are both baked into the HTML at
+  render time, so under a full-page cache the nonce goes stale within 12–24h
+  and every visitor silently gets fallback results, while the timing check
+  becomes a no-op. Needs to be resolved against their actual cache config.
+- **Nothing in this repo has been executed.** No PHP runtime and no WordPress
+  install is available in the development session, so every change so far is
+  reviewed-but-unrun. First run of any of it will be on staging.
+
+## Code review findings (full file reviewed — 1029 lines, nothing truncated)
+
+The audit's "lines 150–879 not yet checked" item is now closed. All seven
+findings are **fixed**; the notes are kept because several describe traps worth
+not falling into again:
+
+1. ~~Five of 12 topics unreachable~~ — the `$topic_map` gap. Root cause of the
+   critical bug in decision 1.
+2. ~~`article_topic` was always empty in analytics~~ — the prompt never asked
+   Claude to return `topics`, and the post-processing step re-injected only
+   `description` from the library. Every `card_click` row and the dashboard's
+   "Topic" column was blank. Now re-injects `topics` and `format` from the
+   library, and drops any recommendation whose URL isn't in the library.
+3. ~~Silent whole-library substitution on no-match~~ — the topic pre-filter
+   discarded itself entirely when it found fewer than 6 matches, handing Claude
+   the unfiltered library. Someone selecting only "Pensions" got confident
+   recommendations drawn from a pool containing nothing about pensions. The
+   filter also counted `level: all` items as matches, which masked true
+   no-match cases. Now distinguishes genuine topic matches from general
+   content, and says so honestly when there is nothing.
+4. ~~Unconditional `define()` on credentials~~ — would have fired a PHP notice
+   once the real key was set in `wp-config.php`, with the wp-config value
+   winning by accident rather than design. Now guarded.
+5. ~~`fq_create_table()` ran on `init`~~ — a `require_once` of
+   `wp-admin/includes/upgrade.php` plus a `CREATE TABLE` on every front-end
+   page load. Now gated behind an `fq_db_version` option, so a normal request
+   costs one autoloaded option read. **Bump `FQ_DB_VERSION` whenever the
+   `CREATE TABLE` statement changes**, or `dbDelta` will never run again.
+6. ~~Model output was interpolated into `innerHTML` unescaped~~ —
+   `renderCards()` put `title`, `description`, `reason` and `url` into a markup
+   string with no escaping and no scheme check on `href`. Now built with DOM
+   APIs and `textContent`, which removes the class of problem rather than
+   escaping each field, plus a guard rejecting any href that isn't plain
+   http(s). **Keep it that way** — reintroducing a template literal here puts
+   model output back into the DOM as markup.
+7. ~~Rate-limit window re-extended itself~~ — every request rewrote the
+   transient with a fresh full TTL, making it "10 requests with no gap longer
+   than the window" rather than "10 per window"; a steady trickle accumulated
+   toward a lockout indefinitely. Now a true fixed window.
+
+   **Unresolved dependency:** the limiter keys on `REMOTE_ADDR`, which behind a
+   CDN or reverse proxy is the proxy's address, not the visitor's — that would
+   pool every visitor into one bucket and lock out the whole site at 10
+   requests. Confirm with DigitalFootprints whether the site is fronted, and
+   if so read the forwarded-for header they set (never trust a client-supplied
+   one).
 
 ## Working style
 
