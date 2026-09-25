@@ -7,7 +7,7 @@
     "HOW TO ADD A TOPIC",
     "  1. Copy an existing block in \"topics\" below and change the values.",
     "  2. Set \"status\" to \"planned\" until content exists for it (see below).",
-    "  3. Put the WordPress library-topic tag slugs in \"taxonomy_terms\".",
+    "  3. Put the WordPress `topic` taxonomy slugs in \"taxonomy_terms\".",
     "  4. Save. Nothing else needs changing — the quiz picks it up.",
     "",
     "FIELDS",
@@ -18,7 +18,7 @@
     "  status          \"live\"    = offered in the quiz",
     "                  \"planned\" = declared but hidden, for topics we intend to",
     "                              cover before any content exists",
-    "  taxonomy_terms  WordPress library-topic tag slugs that count as this",
+    "  taxonomy_terms  WordPress `topic` taxonomy slugs that count as this",
     "                  topic. Several may map to one topic. An empty list means",
     "                  no articles can match — only social posts.",
     "  description     One sentence, written for Claude, describing what belongs",
@@ -29,13 +29,17 @@
     "    breaks, the quiz falls back to a built-in list and logs a warning",
     "    rather than white-screening — but the file is then being ignored.",
     "  - Display order in the quiz follows the order of this file.",
-    "  - taxonomy_terms values are UNVERIFIED against the live site. They were",
-    "    inferred from the prototype's old mapping, which covered only 7 of 12",
-    "    topics. The five marked \"needs_verification\" are guesses and must be",
-    "    checked against the real taxonomy once the local WordPress copy exists."
+    "  - The taxonomy is called `topic`, NOT `library-topic`. `library-topic` is",
+    "    the query-string name the Learning Hub filter uses in URLs; it is not a",
+    "    taxonomy and never was. Getting these confused is what stopped the",
+    "    article side of the recommender from ever returning a single result.",
+    "",
+    "VERIFIED 2026-09-22 against the local copy of the production site.",
+    "Article counts below were true at that point and will drift as content is",
+    "added — they are a snapshot for context, not something the code reads."
   ],
 
-  "version": 1,
+  "version": 2,
 
   "topics": [
     {
@@ -44,7 +48,17 @@
       "emoji": "🏦",
       "status": "live",
       "taxonomy_terms": ["banking"],
+      "articles_at_verification": 7,
       "description": "Current and savings accounts, choosing between financial products, interest rates, and dealing with banks."
+    },
+    {
+      "slug": "big-money-lessons",
+      "label": "Big Money Lessons",
+      "emoji": "💡",
+      "status": "live",
+      "taxonomy_terms": ["big-money-lessons"],
+      "articles_at_verification": 3,
+      "description": "Foundational money lessons and principles, including money habits worth teaching early and to children."
     },
     {
       "slug": "borrowing",
@@ -52,6 +66,7 @@
       "emoji": "💳",
       "status": "live",
       "taxonomy_terms": ["borrowing"],
+      "articles_at_verification": 5,
       "description": "Loans, credit cards, overdrafts, credit scores, debt repayment and getting help with problem debt."
     },
     {
@@ -60,7 +75,17 @@
       "emoji": "💰",
       "status": "live",
       "taxonomy_terms": ["budgeting"],
+      "articles_at_verification": 8,
       "description": "Planning where money goes, tracking spending, managing bills and building a budget that holds."
+    },
+    {
+      "slug": "car-ready",
+      "label": "Car Ready",
+      "emoji": "🚗",
+      "status": "live",
+      "taxonomy_terms": ["car-ready"],
+      "articles_at_verification": 9,
+      "description": "Buying and running a first car: choosing one, ways to pay, insurance, tax, MOTs, fuel and running costs."
     },
     {
       "slug": "income",
@@ -68,43 +93,8 @@
       "emoji": "🚀",
       "status": "live",
       "taxonomy_terms": ["earning"],
+      "articles_at_verification": 3,
       "description": "Wages and payslips, tax on earnings, side income, freelancing and increasing what you earn."
-    },
-    {
-      "slug": "insurance",
-      "label": "Insurance",
-      "emoji": "🛡️",
-      "status": "live",
-      "taxonomy_terms": [],
-      "needs_verification": true,
-      "description": "Cover for home, contents, travel, car, life and health — what it does and whether it is worth it."
-    },
-    {
-      "slug": "mental-health",
-      "label": "Money & Mental Health",
-      "emoji": "🧠",
-      "status": "live",
-      "taxonomy_terms": [],
-      "needs_verification": true,
-      "description": "The two-way link between money worries and mental wellbeing, money anxiety, and where to get support."
-    },
-    {
-      "slug": "pensions",
-      "label": "Pensions",
-      "emoji": "🏖️",
-      "status": "live",
-      "taxonomy_terms": [],
-      "needs_verification": true,
-      "description": "Workplace and personal pensions, auto-enrolment, contributions and planning for retirement."
-    },
-    {
-      "slug": "property",
-      "label": "Renting & mortgages",
-      "emoji": "🏡",
-      "status": "live",
-      "taxonomy_terms": [],
-      "needs_verification": true,
-      "description": "Renting, deposits, tenancy rights, saving for a first home, mortgages and the costs of moving."
     },
     {
       "slug": "saving",
@@ -112,6 +102,7 @@
       "emoji": "📈",
       "status": "live",
       "taxonomy_terms": ["saving"],
+      "articles_at_verification": 9,
       "description": "Building savings, emergency funds, ISAs, compound interest and getting started with investing."
     },
     {
@@ -120,6 +111,7 @@
       "emoji": "🛍️",
       "status": "live",
       "taxonomy_terms": ["spending"],
+      "articles_at_verification": 10,
       "description": "Making money go further, avoiding overspending, impulse buying, subscriptions and cost of living."
     },
     {
@@ -128,6 +120,7 @@
       "emoji": "🔐",
       "status": "live",
       "taxonomy_terms": ["staying-safe"],
+      "articles_at_verification": 4,
       "description": "Recognising scams and fraud, phishing, protecting personal data and what to do if targeted."
     },
     {
@@ -135,9 +128,47 @@
       "label": "Student living",
       "emoji": "🎓",
       "status": "live",
-      "taxonomy_terms": [],
-      "needs_verification": true,
+      "taxonomy_terms": ["university"],
+      "articles_at_verification": 1,
       "description": "Student loans and finance, budgeting at university, student housing and managing money while studying."
+    },
+
+    {
+      "_comment": "Below here: declared but hidden. No content carries these topics yet, so offering them in the quiz would lead visitors to a dead end. Move status to \"live\" as soon as an article is tagged — nothing else needs changing.",
+      "slug": "insurance",
+      "label": "Insurance",
+      "emoji": "🛡️",
+      "status": "planned",
+      "taxonomy_terms": [],
+      "articles_at_verification": 0,
+      "description": "Cover for home, contents, travel, car, life and health — what it does and whether it is worth it."
+    },
+    {
+      "slug": "mental-health",
+      "label": "Money & Mental Health",
+      "emoji": "🧠",
+      "status": "planned",
+      "taxonomy_terms": [],
+      "articles_at_verification": 0,
+      "description": "The two-way link between money worries and mental wellbeing, money anxiety, and where to get support."
+    },
+    {
+      "slug": "pensions",
+      "label": "Pensions",
+      "emoji": "🏖️",
+      "status": "planned",
+      "taxonomy_terms": [],
+      "articles_at_verification": 0,
+      "description": "Workplace and personal pensions, auto-enrolment, contributions and planning for retirement."
+    },
+    {
+      "slug": "property",
+      "label": "Renting & mortgages",
+      "emoji": "🏡",
+      "status": "planned",
+      "taxonomy_terms": [],
+      "articles_at_verification": 0,
+      "description": "Renting, deposits, tenancy rights, saving for a first home, mortgages and the costs of moving."
     }
   ]
 }

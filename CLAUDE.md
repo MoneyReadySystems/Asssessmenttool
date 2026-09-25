@@ -13,9 +13,12 @@ This is a **rebuild and extension of a working prototype** (see
 technical audit of the prototype has already been done; the decisions below
 came out of that audit.
 
-The quiz covers 12 financial topics: Banking, Borrowing, Budgeting, Income,
-Saving, Spending, Scams, Insurance, Pensions, Renting & Mortgages, Money &
-Mental Health, and Student Living.
+The quiz offers **10 live topics**: Banking, Big Money Lessons, Borrowing,
+Budgeting, Car Ready, Income, Saving, Spending, Scams, and Student Living.
+Four more — Insurance, Pensions, Renting & Mortgages, Money & Mental Health —
+are declared in `topics.json` but hidden (`status: planned`) because no content
+carries them yet. See "Topic reality" below; the original spec's flat list of 12
+did not survive contact with the actual content.
 
 ## Key stakeholders
 
@@ -36,19 +39,18 @@ Mental Health, and Student Living.
 
    **Why a file and not a database table:** topics change rarely but need to be
    added ahead of the content that answers them, the file is diffable in git so
-   topic changes are visible in history, and it works today without a local
-   WordPress install. Each entry declares the WordPress `library-topic`
+   topic changes are visible in history, and a `status` flag lets a topic be
+   declared before it is offered. Each entry declares the WordPress `topic`
    taxonomy slugs it maps to, which is what makes the article side work without
    re-tagging anything.
 
-   **Why at all:** the current `$topic_map` only covers 7 of the 12 quiz topics
-   — Insurance, Pensions, Renting & Mortgages, Money & Mental Health, and
-   Student Living are silently excluded from recommendations. This is a
-   critical bug, not a style preference.
+   **Why at all:** the old `$topic_map` covered 7 of the 12 specified topics,
+   silently excluding the rest — and it mapped them against a taxonomy that
+   does not exist, so it never matched anything at all.
 
    **Neither articles nor social posts are ever hardcoded.** Articles come live
-   from WordPress, tagged on creation with `library-topic` terms. Social posts
-   come from the nightly Buffer sync (decision 2). `topics.json` holds only the
+   from WordPress, tagged on creation with `topic` terms. Social posts come
+   from the nightly Buffer sync (decision 2). `topics.json` holds only the
    *vocabulary* — the topic names and how they map — never content.
 
    **Superseded:** the original audit proposed a WordPress custom post type for
@@ -103,17 +105,27 @@ Mental Health, and Student Living.
 ## Existing system behaviour worth knowing before changing anything
 
 - The **content library** is a merged result of a live `WP_Query` against the
-  `library-topic` custom taxonomy, plus (currently) a hardcoded social posts
-  array — cached hourly, invalidated automatically on post publish.
-- **The taxonomy slugs do not match the quiz values.** The taxonomy uses
-  `earning` and `staying-safe` where the quiz uses `income` and `scams`. That
-  translation is exactly what `$topic_map` existed to paper over, and is why
-  topics could fall off the end unnoticed. `topics.json` now declares the
-  mapping explicitly instead.
-- **Unverified until the local WordPress copy exists:** whether `library-topic`
-  actually has terms for the five missing topics, or whether they were never
-  created. If they don't exist, someone has to create them and retro-tag
-  existing Learning Hub articles — a content job, not a code job.
+  `topic` taxonomy, plus (currently) a hardcoded social posts array — cached
+  hourly, invalidated automatically on post publish.
+- **`library-topic` is NOT a taxonomy and never was.** It is the query-string
+  parameter name the Learning Hub filter uses in URLs; the theme translates it
+  to the real `topic` taxonomy itself (`class-honeycom3-library.php`, ~line
+  327). The prototype took the parameter name for a taxonomy name. This is an
+  easy mistake to make because the theme's naming is inconsistent — of its
+  three filters, only one parameter matches its taxonomy:
+
+  | URL parameter | Actual taxonomy |
+  |---|---|
+  | `library-type` | `library-type` (identical) |
+  | `library-topic` | `topic` |
+  | `library-theme` | `themes` |
+
+- **Learning Hub articles are the `library` post type, not `post`.** There are
+  zero published `post` items on the site. The prototype had `post` *and*
+  `library-topic`, either of which alone was enough to return nothing.
+- **Taxonomy slugs do not match quiz values.** `earning`→income,
+  `staying-safe`→scams, `university`→student. `topics.json` declares these
+  explicitly rather than papering over them.
 - The **answer cache** is keyed by MD5 hash of quiz answers (topics + goal +
   confidence + format), 24-hour TTL, shared across all visitors with identical
   answers — not per-user.
@@ -122,6 +134,77 @@ Mental Health, and Student Living.
   separately-reviewed decision changes this.
 - Recommended library size before Claude sees a performance impact: 100–120
   URLs, though topic pre-filtering (already implemented) softens this ceiling.
+
+## Topic reality (measured 2026-09-25 against the local copy)
+
+The specified 12 topics and the actual content only partly correspond, and the
+mismatch runs in **both** directions. Live topics, with article counts at
+verification:
+
+| Quiz topic | `topic` term | Articles |
+|---|---|---|
+| Banking & financial products | `banking` | 7 |
+| Big Money Lessons | `big-money-lessons` | 3 |
+| Borrowing & debt | `borrowing` | 5 |
+| Budgeting | `budgeting` | 8 |
+| Car Ready | `car-ready` | 9 |
+| Income & side hustles | `earning` | 3 |
+| Saving & investing | `saving` | 9 |
+| Spending smartly | `spending` | 10 |
+| Staying safe from scams | `staying-safe` | 4 |
+| Student living | `university` | **1** |
+
+1. **Four specified topics have no content at all** — Insurance, Pensions,
+   Renting & Mortgages, Money & Mental Health. Hidden as `planned` rather than
+   removed, so the intent stays on record. Flip `status` to `live` the moment an
+   article is tagged.
+2. **Two content topics had no quiz topic** — `car-ready` (9 articles, the
+   second-largest body of content on the site) and `big-money-lessons` (3).
+   12 of 50 articles were unreachable from the quiz regardless of what a
+   visitor selected. Both added as quiz topics on Ruth's decision.
+3. **Student living has exactly one article**, so that checkbox yields a single
+   recommendation. Ruth's read: the thin topics may be filled by social posts
+   once the Buffer sync lands (decision 2), since social content likely covers
+   student life, renting and mental health better than the Learning Hub does.
+   **Re-check the live/planned split after the first Buffer sync** — some of
+   the four hidden topics may become viable on social content alone.
+
+## Content gaps worth fixing editorially (not code problems)
+
+1. **8 of the 9 Car Ready articles have no summary text anywhere** — no Yoast
+   meta description, no excerpt, and an ACF `content` field holding only the
+   title as a heading. They reach the model as a title and nothing else. The
+   titles are descriptive enough to work ("Car tax", "Insurance and extras"),
+   but a Yoast meta description on each would measurably improve how well they
+   get matched. Highest-value editorial fix available.
+2. **Two library articles carry no `topic` term**, so they can never be
+   recommended: "Five top tips for your finances when starting a family" and
+   "5 money lessons children should learn before they're 12".
+3. **Excerpts are empty on all 52 library articles.** Not a problem — the
+   description chain handles it — but worth knowing they are unused.
+4. `library-type` contains only abandoned placeholder terms ("Type A",
+   "Type C", zero posts each). It is not a usable source of anything.
+
+## Local development environment
+
+Local by Flywheel, site `money-ready`, a copy of production including the
+Learning Hub. Notes for running code against it:
+
+1. Site root: `C:\Users\RuthPeacegood\Local Sites\money-ready\app\public`
+2. PHP CLI: `%APPDATA%\Local\lightning-services\php-8.1.29+0\bin\win64\php.exe`
+3. The CLI binary has no extensions loaded. Add
+   `-d extension_dir=<that dir>\ext -d extension=php_mysqli.dll`, or WordPress
+   aborts with "missing the MySQL extension".
+4. MySQL listens on **port 10004**, but `wp-config.php` hardcodes `DB_HOST` as
+   `localhost` — which from CLI means 3306. Pre-define
+   `define( 'DB_HOST', '127.0.0.1:10004' )` *before* requiring `wp-load.php`;
+   wp-config's own `define()` then no-ops. (The same `define()` precedence the
+   quiz's config block was fixed to rely on.)
+5. The site must be **started in the Local app** first — no `mysqld`, no
+   database.
+6. There is no WP-CLI. Bootstrap `wp-load.php` from a PHP script instead.
+7. `gh` is installed but **not on PATH** in older sessions; call it at
+   `C:\Program Files\GitHub CLI\gh.exe` if the bare command fails.
 
 ## Tooling
 
@@ -162,9 +245,28 @@ Mental Health, and Student Living.
   render time, so under a full-page cache the nonce goes stale within 12–24h
   and every visitor silently gets fallback results, while the timing check
   becomes a no-op. Needs to be resolved against their actual cache config.
-- **Nothing in this repo has been executed.** No PHP runtime and no WordPress
-  install is available in the development session, so every change so far is
-  reviewed-but-unrun. First run of any of it will be on staging.
+## What has actually been executed (as of 2026-09-25)
+
+Superseding the earlier "nothing has been run" caveat. Verified by running the
+real code against the local copy of production:
+
+1. `finance-quiz-shortcode.php` passes `php -l` cleanly.
+2. `fq_get_content_library()` builds **55 items** — 45 articles, 7 videos,
+   3 social posts — with **zero blank descriptions**.
+3. All 10 live topics return matches; the 4 `planned` topics are correctly
+   absent from the quiz.
+4. Multi-topic selections behave sensibly (budgeting+spending → 17 items,
+   banking+saving+scams → 21).
+5. Description sources across the 50 tagged articles: 29 from Yoast meta
+   descriptions, 21 from the ACF `content` field, **0 falling through to a bare
+   title**.
+6. Whole library serialised for the prompt is ~17KB, roughly 4,300 tokens —
+   comfortably within budget, so topic pre-filtering is an optimisation rather
+   than a necessity at current content volume.
+
+**Still unverified:** the AJAX endpoints, the actual Anthropic API call (no key
+set), the admin dashboard, and the quiz UI in a browser. Those need either a
+real `FQ_API_KEY` or the staging environment.
 
 ## Code review findings (full file reviewed — 1029 lines, nothing truncated)
 

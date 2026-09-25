@@ -30,8 +30,14 @@
 // ============================================================
 if ( ! defined( 'FQ_API_KEY' ) )            define( 'FQ_API_KEY',           'YOUR_API_KEY_HERE' );
 if ( ! defined( 'FQ_MODEL' ) )              define( 'FQ_MODEL',             'claude-opus-5' );
-if ( ! defined( 'FQ_POST_TYPE' ) )          define( 'FQ_POST_TYPE',         'post' );
-if ( ! defined( 'FQ_TOPIC_TAXONOMY' ) )     define( 'FQ_TOPIC_TAXONOMY',    'library-topic' );
+// Learning Hub articles are the `library` custom post type, tagged with the
+// `topic` taxonomy. The prototype had 'post' and 'library-topic' — both wrong,
+// and either alone was enough to make the article query return nothing.
+// 'library-topic' is the query-string name the Learning Hub filter uses in
+// URLs; the theme translates it to `topic` itself (see the theme's
+// class-honeycom3-library.php). There has never been a taxonomy of that name.
+if ( ! defined( 'FQ_POST_TYPE' ) )          define( 'FQ_POST_TYPE',         'library' );
+if ( ! defined( 'FQ_TOPIC_TAXONOMY' ) )     define( 'FQ_TOPIC_TAXONOMY',    'topic' );
 if ( ! defined( 'FQ_TOPICS_FILE' ) )        define( 'FQ_TOPICS_FILE',       'topics.json' );
 if ( ! defined( 'FQ_CACHE_KEY' ) )          define( 'FQ_CACHE_KEY',         'fq_content_library' );
 if ( ! defined( 'FQ_CACHE_DURATION' ) )     define( 'FQ_CACHE_DURATION',    HOUR_IN_SECONDS );
@@ -40,7 +46,10 @@ if ( ! defined( 'FQ_RATE_LIMIT_MAX' ) )     define( 'FQ_RATE_LIMIT_MAX',    10 )
 if ( ! defined( 'FQ_RATE_LIMIT_WINDOW' ) )  define( 'FQ_RATE_LIMIT_WINDOW', 10 * MINUTE_IN_SECONDS );
 if ( ! defined( 'FQ_MIN_TIME' ) )           define( 'FQ_MIN_TIME',          8 );
 if ( ! defined( 'FQ_TIME_SECRET' ) )        define( 'FQ_TIME_SECRET',       AUTH_KEY );
-if ( ! defined( 'FQ_DESC_WORDS' ) )         define( 'FQ_DESC_WORDS',        10 );
+// 10 was set when descriptions were effectively noise. They are now real
+// summaries, so it is worth giving the model more of them: 50 items at ~25
+// words is a few thousand tokens, well inside a sensible prompt budget.
+if ( ! defined( 'FQ_DESC_WORDS' ) )         define( 'FQ_DESC_WORDS',        25 );
 if ( ! defined( 'FQ_DB_TABLE' ) )           define( 'FQ_DB_TABLE',          'fq_events' ); // without WP prefix — added automatically
 if ( ! defined( 'FQ_DB_VERSION' ) )         define( 'FQ_DB_VERSION',        '1.0' ); // bump when the fq_events schema changes
 if ( ! defined( 'FQ_GA4_MEASUREMENT_ID' ) ) define( 'FQ_GA4_MEASUREMENT_ID','G-XXXXXXXXXX' ); // ⚠️ Replace with your GA4 Measurement ID
@@ -219,6 +228,84 @@ function fq_get_fallbacks() {
 }
  
 // ============================================================
+// LIBRARY ITEM FIELDS
+//
+// Both functions below exist because the obvious sources are empty. Verified
+// against the real content on 2026-09-22 — do not "simplify" these back to
+// reading post_content or an ACF field without re-checking.
+// ============================================================
+
+/**
+ * Best available description for a library item.
+ *
+ * `library` posts store their body as a single ACF block, which in the
+ * database is an HTML *comment* containing JSON. `wp_strip_all_tags()`
+ * discards comments wholesale, so the prototype's
+ * `wp_trim_words( strip_shortcodes( $post->post_content ), 30 )` returned an
+ * empty string for every article — measured at 34,875 characters in, 0 out.
+ * Every article would have reached Claude with a blank description.
+ *
+ * Preference order puts deliberate summaries ahead of raw body text:
+ *   1. Yoast meta description — purpose-written, present on 31 of 52
+ *   2. The excerpt — none exist today, but it outranks body text if added
+ *   3. The ACF `content` field, tags stripped — present on 51 of 52, but often
+ *      opens with author attribution, so it is a fallback rather than a pick
+ *   4. The title, so nothing is ever described as nothing
+ */
+function fq_resolve_description( $post ) {
+    $yoast = get_post_meta( $post->ID, '_yoast_wpseo_metadesc', true );
+    if ( is_string( $yoast ) && trim( $yoast ) !== '' ) {
+        return trim( wp_strip_all_tags( $yoast ) );
+    }
+
+    if ( has_excerpt( $post->ID ) ) {
+        $excerpt = trim( wp_strip_all_tags( get_the_excerpt( $post ) ) );
+        if ( $excerpt !== '' ) return $excerpt;
+    }
+
+    $acf = get_post_meta( $post->ID, 'content', true );
+    if ( is_string( $acf ) ) {
+        $acf = trim( wp_strip_all_tags( $acf ) );
+
+        // Some articles open their body with the title as a heading, so the
+        // extracted text would just repeat the title back to the model and
+        // waste the description slot. Drop that prefix where real text follows
+        // it — but keep the title where nothing does, rather than returning an
+        // empty description. Measured 2026-09-25: 9 items echo their title,
+        // and for 8 of them (the Car Ready series) the heading is all there is.
+        if ( $acf !== '' && stripos( $acf, $post->post_title ) === 0 ) {
+            $remainder = trim( ltrim(
+                mb_substr( $acf, mb_strlen( $post->post_title ) ),
+                " \t\n\r.:–—-"
+            ) );
+            $acf = ( str_word_count( $remainder ) >= 5 ) ? $remainder : '';
+        }
+
+        if ( $acf !== '' ) return $acf;
+    }
+
+    return $post->post_title;
+}
+
+/**
+ * Best available format for a library item.
+ *
+ * The `fq_format` ACF field the prototype read is not set on a single post,
+ * and the `library-type` taxonomy holds only abandoned placeholder terms
+ * ("Type A", "Type C", zero posts each). There is nothing authoritative to
+ * read, so format is inferred from an embedded video — true of 6 of the 52
+ * library posts at time of verification.
+ *
+ * If a real format field is added later, read it here in preference.
+ */
+function fq_resolve_format( $post ) {
+    $haystack = $post->post_content . ' ' . (string) get_post_meta( $post->ID, 'content', true );
+    return preg_match( '#youtube\.com|youtu\.be|vimeo\.com|<video[\s>]#i', $haystack )
+        ? 'video'
+        : 'article';
+}
+
+// ============================================================
 // DYNAMIC LIBRARY
 // ============================================================
 function fq_get_content_library() {
@@ -245,18 +332,16 @@ function fq_get_content_library() {
             array_map( fn($s) => $topic_map[$s] ?? null, $terms )
         )));
         if ( empty($mapped) ) continue;
-        $format   = function_exists('get_field') ? (get_field('fq_format',$post->ID) ?: 'article') : 'article';
-        $level    = function_exists('get_field') ? (get_field('fq_level', $post->ID) ?: 'beginner') : 'beginner';
-        $raw_desc = has_excerpt($post->ID)
-            ? get_the_excerpt($post)
-            : wp_trim_words(strip_shortcodes($post->post_content), 30, '');
+        // No `level` here. The fq_level field it came from is set on zero
+        // posts, so every article claimed to be "beginner" — a value that
+        // carried no information and misled the prompt. Social posts keep
+        // their own level, where it is set deliberately.
         $library[] = [
             'title'       => $post->post_title,
             'url'         => get_permalink($post->ID),
-            'description' => $raw_desc,
+            'description' => fq_resolve_description($post),
             'topics'      => $mapped,
-            'format'      => $format,
-            'level'       => $level,
+            'format'      => fq_resolve_format($post),
         ];
     }
     $library = array_merge($library, fq_get_social_posts());
@@ -333,10 +418,21 @@ function fq_answer_cache_key($answers) {
         'format'     => $answers['format']     ?? '',
     ]));
 }
+/**
+ * Trim the library down to what the model needs to choose well: title, url,
+ * topics, format and a shortened description. `level` is deliberately dropped
+ * — it is absent on articles and only set on hardcoded social posts, so
+ * including it fed the prompt an inconsistent field with no signal in it.
+ */
 function fq_truncate_for_prompt($library) {
     return array_map(function($item) {
-        $item['description'] = wp_trim_words($item['description'], FQ_DESC_WORDS, '…');
-        return $item;
+        return [
+            'title'       => $item['title'],
+            'url'         => $item['url'],
+            'topics'      => (array)($item['topics'] ?? []),
+            'format'      => $item['format'] ?? 'article',
+            'description' => wp_trim_words($item['description'] ?? '', FQ_DESC_WORDS, '…'),
+        ];
     }, $library);
 }
  
@@ -449,15 +545,13 @@ function fq_proxy_handler() {
             ]);
         }
 
-        if (count($matched) < 6) {
-            $matched_urls = array_column($matched, 'url');
-            $general = array_values(array_filter($library, function($item) use ($matched_urls) {
-                return ($item['level'] ?? '') === 'all'
-                    && !in_array($item['url'], $matched_urls, true);
-            }));
-            $matched = array_merge($matched, array_slice($general, 0, 6 - count($matched)));
-        }
-
+        // No padding. An earlier version topped up a thin result set with
+        // `level: all` items, but that field is set on zero WordPress articles
+        // — so the padding could only ever have pulled in hardcoded social
+        // posts, and topping up with off-topic content is what produced the
+        // original bug. A genuine match set of three is a better answer than
+        // three matches plus three unrelated items; $how_many below adapts to
+        // however many there actually are.
         $library = $matched;
     }
  
