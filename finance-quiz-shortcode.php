@@ -58,6 +58,10 @@ if ( ! defined( 'FQ_TIME_SECRET' ) )        define( 'FQ_TIME_SECRET',       AUTH
 // summaries, so it is worth giving the model more of them: 50 items at ~25
 // words is a few thousand tokens, well inside a sensible prompt budget.
 if ( ! defined( 'FQ_DESC_WORDS' ) )         define( 'FQ_DESC_WORDS',        25 );
+// Cap on the description stored in the library and shown on a card. Without
+// it, articles whose description falls back to the ACF body put a wall of
+// text on the card — the first rendered test showed a ~120-word paragraph.
+if ( ! defined( 'FQ_DESC_MAX_WORDS' ) )     define( 'FQ_DESC_MAX_WORDS',    40 );
 if ( ! defined( 'FQ_DB_TABLE' ) )           define( 'FQ_DB_TABLE',          'fq_events' ); // without WP prefix — added automatically
 if ( ! defined( 'FQ_DB_VERSION' ) )         define( 'FQ_DB_VERSION',        '1.0' ); // bump when the fq_events schema changes
 if ( ! defined( 'FQ_GA4_MEASUREMENT_ID' ) ) define( 'FQ_GA4_MEASUREMENT_ID','G-XXXXXXXXXX' ); // ⚠️ Replace with your GA4 Measurement ID
@@ -327,20 +331,37 @@ function fq_get_fallbacks() {
  *      opens with author attribution, so it is a fallback rather than a pick
  *   4. The title, so nothing is ever described as nothing
  */
+/**
+ * Plain text from HTML, with block boundaries preserved as spaces.
+ *
+ * `wp_strip_all_tags()` alone concatenates across them, turning
+ * "…a big moment.</p><p>Now comes…" into "…a big moment.Now comes…". Visible
+ * on the rendered cards before this was added.
+ */
+/** Trim to a readable card length. */
+function fq_cap_words( $text ) {
+    return wp_trim_words( $text, FQ_DESC_MAX_WORDS, '…' );
+}
+
+function fq_text_from_html( $html ) {
+    $spaced = preg_replace( '#<(br|/p|/h[1-6]|/li|/div|/td|/tr)\b[^>]*>#i', ' $0', (string) $html );
+    return trim( preg_replace( '/\s+/', ' ', wp_strip_all_tags( $spaced ) ) );
+}
+
 function fq_resolve_description( $post ) {
     $yoast = get_post_meta( $post->ID, '_yoast_wpseo_metadesc', true );
     if ( is_string( $yoast ) && trim( $yoast ) !== '' ) {
-        return trim( wp_strip_all_tags( $yoast ) );
+        return fq_cap_words( fq_text_from_html( $yoast ) );
     }
 
     if ( has_excerpt( $post->ID ) ) {
-        $excerpt = trim( wp_strip_all_tags( get_the_excerpt( $post ) ) );
-        if ( $excerpt !== '' ) return $excerpt;
+        $excerpt = fq_text_from_html( get_the_excerpt( $post ) );
+        if ( $excerpt !== '' ) return fq_cap_words( $excerpt );
     }
 
     $acf = get_post_meta( $post->ID, 'content', true );
     if ( is_string( $acf ) ) {
-        $acf = trim( wp_strip_all_tags( $acf ) );
+        $acf = fq_text_from_html( $acf );
 
         // Some articles open their body with the title as a heading, so the
         // extracted text would just repeat the title back to the model and
@@ -356,7 +377,7 @@ function fq_resolve_description( $post ) {
             $acf = ( str_word_count( $remainder ) >= 5 ) ? $remainder : '';
         }
 
-        if ( $acf !== '' ) return $acf;
+        if ( $acf !== '' ) return fq_cap_words( $acf );
     }
 
     return $post->post_title;
@@ -1058,73 +1079,134 @@ function finance_quiz_shortcode() {
     ob_start(); ?>
     <div id="fq-wrap">
     <style>
+      /* ----------------------------------------------------------------
+         Styling follows the volunteer portal's conventions so the two feel
+         like one product: 16px card radius, 4px button radius, the same
+         two-layer shadow with a hover lift, and Open Sans for body text.
+         Tokens mirror money-ready-volunteer-portal/assets/css.
+
+         Selectors are scoped under #fq-wrap and several carry !important.
+         That is not laziness — the honeycom3 theme's own label and button
+         rules otherwise win, which is what made the options collapse to
+         `display:inline` and shrink-wrap instead of filling the grid.
+         ---------------------------------------------------------------- */
+      #fq-wrap{
+        --mr-pinkey:#8F0425; --mr-pinkey-dark:#6e031c; --mr-pinkey-5:#F9F2F4;
+        --mr-fiver:#1C466B; --mr-vault:#767676; --mr-fine-print:#0C0C0C;
+        --mr-silver:#F2F2F2; --mr-white:#fff;
+        --fq-shadow:0 2px 8px rgba(0,0,0,.06), 0 8px 24px rgba(0,0,0,.08);
+        --fq-shadow-hover:0 4px 12px rgba(0,0,0,.08), 0 12px 32px rgba(0,0,0,.12);
+        --font-headline:'Forma DJR Display','forma-djr-display',Arial,sans-serif;
+        --font-body:'Open Sans',Arial,sans-serif;
+      }
       #fq-wrap *{box-sizing:border-box}
-      #fq-wrap{font-family:'Segoe UI',system-ui,sans-serif;max-width:620px;margin:0 auto;border-radius:16px;overflow:hidden;box-shadow:0 6px 32px rgba(0,0,0,.10)}
-      #fq-wrap *:focus-visible{outline:3px solid #8F0425 !important;outline-offset:3px !important}
+      #fq-wrap{font-family:var(--font-body);max-width:620px;margin:0 auto;border-radius:16px;overflow:hidden;box-shadow:var(--fq-shadow)}
+      #fq-wrap *:focus-visible{outline:3px solid var(--mr-pinkey) !important;outline-offset:3px !important}
       #fq-wrap .fq-input-option input[type=checkbox]:focus-visible + label,
-      #fq-wrap .fq-input-option input[type=radio]:focus-visible + label{outline:3px solid #8F0425;outline-offset:3px;border-radius:8px}
+      #fq-wrap .fq-input-option input[type=radio]:focus-visible + label{outline:3px solid var(--mr-pinkey);outline-offset:3px;border-radius:8px}
       #fq-wrap [tabindex="-1"]:focus{outline:none}
-      #fq-wrap .fq-input-option{position:relative}
+      /* width:100% is load-bearing. Without it these grid items shrink-wrap
+         to their text, so every option ends up a different width. The label's
+         own width:100% then resolves against that shrunken box, which is why
+         forcing the label alone does nothing — it has to be the wrapper. */
+      #fq-wrap .fq-input-option{position:relative;display:block !important;width:100% !important}
       #fq-wrap .fq-input-option input{position:absolute;opacity:0;width:100%;height:100%;margin:0;cursor:pointer;z-index:1}
-      .fq-header{background:#8F0425;padding:28px 32px 26px;color:#fff}
-      .fq-header img{height:26px;filter:brightness(0) invert(1);margin-bottom:14px;display:block}
-      .fq-header h1{font-size:1.4rem;font-weight:800;margin:0 0 6px;line-height:1.25;color:#fff}
-      .fq-header p{font-size:.87rem;opacity:.9;margin:0;line-height:1.55}
-      .fq-progress-meta{display:flex;justify-content:space-between;font-size:.71rem;opacity:.85;margin-bottom:7px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;margin-top:20px}
-      .fq-progress-track{background:rgba(0,0,0,0.25);border-radius:99px;height:5px}
-      .fq-progress-fill{background:#fff;height:100%;border-radius:99px;transition:width .4s ease}
-      .fq-body{background:#fff;padding:28px 32px 32px}
-      .fq-step{display:none}.fq-step.fq-active{display:block}
-      .fq-step legend{font-size:1.05rem;font-weight:700;color:#1a1a2e;margin:0 0 18px;line-height:1.4;display:block;width:100%;padding:0;float:left}
-      .fq-step legend + *{clear:both}
-      .fq-hint{font-size:.78rem;color:#595959;margin:-10px 0 13px}
-      .fq-opts{display:grid;gap:8px}
-      .fq-opts.fq-2col{grid-template-columns:1fr 1fr}
-      .fq-opt-label{display:block;border:2px solid #949494;border-radius:8px;padding:11px 14px;background:#fff;cursor:pointer;font-size:.86rem;font-weight:500;color:#1a1a2e;transition:all .15s;line-height:1.4}
-      .fq-opt-label:hover{border-color:#8F0425;background:#fdf0f3}
-      .fq-opt-label.fq-checked{border-color:#8F0425;background:#fdf0f3;color:#8F0425;font-weight:700}
-      .fq-nav{display:flex;justify-content:space-between;align-items:center;margin-top:26px;gap:12px}
-      .fq-btn{padding:10px 24px;border-radius:99px;font-size:.9rem;font-weight:700;cursor:pointer;border:none;transition:all .15s}
-      .fq-back{background:#fff;color:#595959;border:2px solid #949494 !important}.fq-back:hover{background:#f8f8f8}
-      .fq-next,.fq-submit{background:#8F0425;color:#fff}.fq-next:hover,.fq-submit:hover{background:#6e0319}
-      .fq-next:disabled,.fq-submit:disabled{background:#e5e5e5;color:#595959;cursor:not-allowed}
-      .fq-submit{width:100%;flex:1}
-      .fq-loading{text-align:center;padding:48px 0}
-      .fq-spinner{width:44px;height:44px;border:4px solid #e5e5e5;border-top-color:#8F0425;border-radius:50%;animation:fqspin .85s linear infinite;margin:0 auto 18px}
+
+      #fq-wrap .fq-header{background:var(--mr-pinkey);padding:26px 32px 24px;color:#fff}
+      #fq-wrap .fq-header h1{font-family:var(--font-headline);font-size:1.4rem;font-weight:700;margin:0 0 6px;line-height:1.25;color:#fff}
+      #fq-wrap .fq-header p{font-size:.87rem;opacity:.92;margin:0;line-height:1.55}
+      #fq-wrap .fq-progress-meta{display:flex;justify-content:flex-start;font-size:.71rem;opacity:.85;margin:20px 0 7px;font-weight:700;text-transform:uppercase;letter-spacing:.05em}
+      #fq-wrap .fq-progress-meta span{margin:0 !important}
+      #fq-wrap .fq-progress-track{background:rgba(0,0,0,.25);border-radius:99px;height:6px;overflow:hidden}
+      /* margin:0 is load-bearing. The theme applies `margin: 0 auto` to this,
+         which centred the fill inside the track instead of anchoring it left,
+         so the bar appeared to grow outwards from the middle. */
+      #fq-wrap .fq-progress-fill{background:#fff;height:100%;width:25%;border-radius:99px;margin:0 !important;transition:width .4s ease}
+
+      #fq-wrap .fq-body{background:#fff;padding:28px 32px 32px}
+      #fq-wrap .fq-step{display:none;border:0;padding:0;margin:0}
+      #fq-wrap .fq-step.fq-active{display:block}
+      #fq-wrap .fq-step legend{font-family:var(--font-headline);font-size:1.12rem;font-weight:700;color:var(--mr-fine-print);margin:0 0 18px;line-height:1.35;display:block;width:100%;padding:0;float:left}
+      #fq-wrap .fq-step legend + *{clear:both}
+      #fq-wrap .fq-hint{font-size:.78rem;color:var(--mr-vault);margin:-10px 0 13px}
+
+      #fq-wrap .fq-opts{display:grid;gap:10px}
+      #fq-wrap .fq-opts.fq-2col{grid-template-columns:1fr 1fr}
+      /* display:block !important — the theme's label rule sets `inline`,
+         which collapsed these to shrink-wrapped, centred pills. */
+      #fq-wrap .fq-opt-label{
+        display:block !important;width:100% !important;text-align:left !important;
+        border:1.5px solid #D9D9D9;border-radius:8px;padding:12px 14px;background:#fff;
+        cursor:pointer;font-family:var(--font-body);font-size:.88rem;font-weight:400;
+        color:var(--mr-fine-print);line-height:1.4;margin:0;
+        transition:border-color .15s ease, background .15s ease, box-shadow .15s ease;
+      }
+      #fq-wrap .fq-opt-label:hover{border-color:var(--mr-pinkey);background:var(--mr-pinkey-5)}
+      #fq-wrap .fq-opt-label.fq-checked{border-color:var(--mr-pinkey);background:var(--mr-pinkey-5);color:var(--mr-pinkey);font-weight:700}
+
+      #fq-wrap .fq-nav{display:flex;justify-content:space-between;align-items:center;margin-top:26px;gap:12px}
+      #fq-wrap .fq-btn{
+        display:inline-block;padding:9px 20px;border-radius:4px;
+        font-family:var(--font-body);font-size:.85rem;font-weight:700;line-height:1.4;
+        cursor:pointer;border:none;text-align:center;transition:all .15s ease;
+      }
+      #fq-wrap .fq-back{background:var(--mr-silver);color:var(--mr-fine-print)}
+      #fq-wrap .fq-back:hover{background:#e6e6e6}
+      #fq-wrap .fq-next,#fq-wrap .fq-submit{background:var(--mr-pinkey);color:#fff}
+      #fq-wrap .fq-next:hover,#fq-wrap .fq-submit:hover{background:var(--mr-pinkey-dark)}
+      #fq-wrap .fq-next:disabled,#fq-wrap .fq-submit:disabled{background:#E3E3E3;color:#8A8A8A;cursor:not-allowed}
+      #fq-wrap .fq-submit{flex:1}
+
+      #fq-wrap .fq-loading{text-align:center;padding:48px 0}
+      #fq-wrap .fq-spinner{width:44px;height:44px;border:4px solid var(--mr-silver);border-top-color:var(--mr-pinkey);border-radius:50%;animation:fqspin .85s linear infinite;margin:0 auto 18px}
       @keyframes fqspin{to{transform:rotate(360deg)}}
-      .fq-loading-msg{color:#1a1a2e;font-weight:700;font-size:.97rem;margin-bottom:5px;transition:opacity .4s ease}
-      .fq-loading-sub{color:#595959;font-size:.82rem;margin:0}
-      #fq-results h2{font-size:1.08rem;font-weight:800;color:#1a1a2e;margin:0 0 4px}
-      .fq-sub{color:#595959;font-size:.85rem;margin:0 0 20px;line-height:1.5}
-      .fq-fallback-note{background:#fff8f0;border:1px solid #f9c5a0;border-radius:8px;padding:10px 14px;font-size:.82rem;color:#7a3200;margin-bottom:16px}
-      .fq-cards{display:grid;gap:11px}
-      .fq-card{display:block;border:1.5px solid #e5e5e5;border-left:4px solid #8F0425;border-radius:8px;padding:14px 16px;text-decoration:none;color:#1a1a2e;transition:all .15s;background:#fff}
-      .fq-card:hover{background:#fdf0f3;transform:translateY(-2px);box-shadow:0 4px 16px rgba(143,4,37,.10)}
-      .fq-card-reason{font-size:.71rem;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:#8F0425;margin-bottom:4px}
-      .fq-card-title{font-weight:700;font-size:.94rem;margin-bottom:4px}
-      .fq-card-desc{font-size:.82rem;color:#595959;line-height:1.45}
-      .fq-card-fmt{display:inline-block;font-size:.72rem;font-weight:600;color:#fff;background:#1C466B;border-radius:99px;padding:3px 10px;margin-top:9px}
-      .fq-cta{margin-top:20px;padding:16px 18px;background:#1C466B;border-radius:10px;display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
-      .fq-cta p:first-child{font-size:.85rem;font-weight:700;color:#fff;margin:0 0 2px}
-      .fq-cta p:last-child{font-size:.78rem;color:rgba(255,255,255,.75);margin:0}
-      .fq-cta a{padding:9px 18px;border-radius:99px;font-size:.82rem;font-weight:700;background:#fff;color:#1C466B;text-decoration:none;white-space:nowrap;flex-shrink:0}
-      .fq-restart{margin-top:12px;background:#fff;color:#595959;border:2px solid #949494;display:block;width:100%;padding:10px;border-radius:99px;cursor:pointer;font-size:.85rem;font-weight:600;transition:all .15s}
-      .fq-restart:hover{background:#f8f8f8}
-      .fq-sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
-      @media(max-width:480px){.fq-opts.fq-2col{grid-template-columns:1fr}.fq-header,.fq-body{padding-left:18px;padding-right:18px}}
+      #fq-wrap .fq-loading-msg{font-family:var(--font-headline);color:var(--mr-fine-print);font-weight:700;font-size:1rem;margin-bottom:5px;transition:opacity .4s ease}
+      #fq-wrap .fq-loading-sub{color:var(--mr-vault);font-size:.82rem;margin:0}
+
+      #fq-wrap #fq-results h2{font-family:var(--font-headline);font-size:1.2rem;font-weight:700;color:var(--mr-fine-print);margin:0 0 6px}
+      #fq-wrap .fq-sub{color:var(--mr-vault);font-size:.85rem;margin:0 0 20px;line-height:1.5}
+      #fq-wrap .fq-fallback-note{background:#FFF6EF;border:1px solid #F3C9A6;border-radius:8px;padding:11px 14px;font-size:.82rem;color:#7A3200;margin-bottom:16px}
+
+      /* Cards: no left bar, no border. One shadow treatment everywhere, the
+         same as the volunteer portal's. */
+      #fq-wrap .fq-cards{display:grid;gap:14px}
+      #fq-wrap .fq-card{
+        display:block;background:#fff;border:none;border-radius:16px;
+        padding:18px 20px;text-decoration:none;color:var(--mr-fine-print);
+        box-shadow:var(--fq-shadow);
+        transition:box-shadow .25s ease, transform .25s ease;
+      }
+      #fq-wrap .fq-card:hover{box-shadow:var(--fq-shadow-hover);transform:translateY(-2px)}
+      /* Two levels, not three: the title leads, the reason supports it. */
+      #fq-wrap .fq-card-title{font-family:var(--font-headline);font-weight:700;font-size:1.02rem;line-height:1.3;margin:0 0 6px;color:var(--mr-fine-print)}
+      #fq-wrap .fq-card-reason{font-family:var(--font-body);font-size:.86rem;font-weight:400;line-height:1.5;color:#4A4A4A;margin:0}
+      #fq-wrap .fq-card-fmt{display:inline-block;font-family:var(--font-body);font-size:.72rem;font-weight:700;color:#fff;background:var(--mr-fiver);border-radius:4px;padding:4px 10px;margin-top:12px}
+
+      #fq-wrap .fq-cta{margin-top:22px;padding:18px 20px;background:var(--mr-fiver);border-radius:16px;display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+      #fq-wrap .fq-cta p:first-child{font-family:var(--font-headline);font-size:.92rem;font-weight:700;color:#fff;margin:0 0 2px}
+      #fq-wrap .fq-cta p:last-child{font-size:.8rem;color:rgba(255,255,255,.8);margin:0}
+      #fq-wrap .fq-cta a{padding:9px 20px;border-radius:4px;font-size:.85rem;font-weight:700;background:#fff;color:var(--mr-fiver);text-decoration:none;white-space:nowrap;flex-shrink:0}
+      #fq-wrap .fq-restart{margin-top:14px;background:var(--mr-silver);color:var(--mr-fine-print);border:none;display:block;width:100%;padding:11px;border-radius:4px;cursor:pointer;font-family:var(--font-body);font-size:.85rem;font-weight:700;transition:all .15s ease}
+      #fq-wrap .fq-restart:hover{background:#e6e6e6}
+
+      #fq-wrap .fq-sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+      @media(max-width:480px){
+        #fq-wrap .fq-opts.fq-2col{grid-template-columns:1fr}
+        #fq-wrap .fq-header,#fq-wrap .fq-body{padding-left:18px;padding-right:18px}
+      }
     </style>
  
     <div class="fq-header">
-      <img src="https://moneyready.org/wp-content/themes/honeycom3/assets/images/logo.png" alt="Money Ready" />
+      <!-- No logo here: the site header already carries one directly above,
+           so a second is redundant. -->
       <h1>Find your perfect content</h1>
       <p>Answer 4 quick questions and we'll point you to the content that's most useful for you right now.</p>
       <div id="fq-progress-wrap">
         <div class="fq-progress-meta">
           <span id="fq-step-label">Question 1 of 4</span>
-          <span aria-hidden="true" id="fq-step-count">1 of 4</span>
         </div>
         <div class="fq-progress-track" role="progressbar" aria-valuenow="1" aria-valuemin="1" aria-valuemax="4" aria-labelledby="fq-step-label">
-          <div class="fq-progress-fill" id="fq-progress" style="width:0%"></div>
+          <div class="fq-progress-fill" id="fq-progress" style="width:25%"></div>
         </div>
       </div>
     </div>
@@ -1305,9 +1387,11 @@ function finance_quiz_shortcode() {
  
       // ── Progress ──
       function setProgress(step) {
-        document.getElementById('fq-progress').style.width = ((step-1)/STEPS*100)+'%';
+        // step/STEPS, not (step-1)/STEPS. The old formula left the bar
+        // completely empty on question 1 and stopped at 75% on question 4,
+        // so it never looked like it was working or finishing.
+        document.getElementById('fq-progress').style.width = (step/STEPS*100)+'%';
         document.getElementById('fq-step-label').textContent = 'Question '+step+' of '+STEPS;
-        document.getElementById('fq-step-count').textContent = step+' of '+STEPS;
         document.querySelector('.fq-progress-track').setAttribute('aria-valuenow', step);
       }
  
@@ -1393,10 +1477,14 @@ function finance_quiz_shortcode() {
             if(hidden) el.setAttribute('aria-hidden','true');
             return el;
           };
-          card.appendChild(part('div',  'fq-card-reason', reason,               true));
-          card.appendChild(part('div',  'fq-card-title',  title,               false));
-          card.appendChild(part('div',  'fq-card-desc',   desc,                false));
-          card.appendChild(part('span', 'fq-card-fmt',    fmt[format]||format, true));
+          // Two levels of information, not three. The title leads; the reason
+          // supports it. The library description is deliberately not shown:
+          // it duplicated the title on articles with no summary text, ran to a
+          // wall of text on those that fell back to body copy, and said
+          // roughly what the reason already says — better.
+          card.appendChild(part('div', 'fq-card-title',  title,  false));
+          if (reason) card.appendChild(part('div', 'fq-card-reason', reason, false));
+          card.appendChild(part('span', 'fq-card-fmt', fmt[format]||format, true));
 
           // Click tracking, attached at creation rather than by re-querying
           // the document afterwards.
