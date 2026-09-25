@@ -411,6 +411,24 @@ Instagram / TikTok". Design `fq_social_post` to hold a set of
 `{service, url}` pairs from the outset rather than a single link field —
 retrofitting that later means a schema change and a resync.
 
+## The honeycom3 theme fights the quiz's CSS — two recurring traps
+
+Both have now bitten three times each. Every `!important` in the quiz's
+stylesheet is load-bearing and carries a comment saying which theme rule it
+beats. Do not tidy them away.
+
+1. **`margin: 0 auto`.** The theme applies it widely, so any element narrower
+   than its container gets centred. It centred the progress bar fill inside
+   its track (making the bar appear to grow from the middle) and centred each
+   action button in its flex line (so buttons spread instead of grouping
+   left). Fix: `margin:0 !important` on anything positioned deliberately.
+2. **Grid items shrink to their content.** A block element inside the quiz's
+   grids does not stretch, so items end up different widths. It hit the topic
+   options (127px–260px instead of a uniform 273px) and then the result cards.
+   Fix: `width:100% !important` on the grid child. Note the trap within the
+   trap: setting it on the *label* does nothing, because the label's `100%`
+   resolves against an already-shrunken wrapper. It has to go on the wrapper.
+
 ## Local development environment
 
 Local by Flywheel, site `money-ready`, a copy of production including the

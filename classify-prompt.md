@@ -72,5 +72,21 @@ none fit, and prefer excluding a post over stretching a topic to fit it:
 Give a short reason for each decision, written for a colleague skimming a
 review queue.
 
+Also write a title for each post. Social copy has no title of its own, so
+without one we are left showing the first few words of the post followed by
+an ellipsis, which reads badly on a card.
+
+- Six to nine words. Sentence case.
+- Say what the content covers, as a person would describe it.
+- It must read as a complete phrase. Never end with an ellipsis, a comma or a
+  dangling preposition, and never just cut the post's opening short.
+- No emoji, no hashtags, no "Money Ready".
+- A question is fine if the post answers one.
+
+Good: "How student loan repayments actually work"
+Good: "Choosing between savings accounts"
+Bad:  "Confused about how student loans work? You're not alone and we're…"
+Bad:  "Worried about making your money last at uni?🤔 Budgeting doesn't…"
+
 POSTS:
 {{POSTS}}

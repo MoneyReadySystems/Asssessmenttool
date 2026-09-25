@@ -267,10 +267,13 @@ function fq_schedule_buffer_sync() {
     if ( wp_next_scheduled( FQ_SYNC_HOOK ) ) return;
     if ( ! defined( 'FQ_BUFFER_TOKEN' ) || ! FQ_BUFFER_TOKEN ) return;   // nothing to sync with
 
-    // First run at the next 03:00 site time — quiet, and well clear of the
-    // hourly library cache so a sync is visible soon after it finishes.
-    $next = strtotime( 'tomorrow 03:00', current_time( 'timestamp' ) );
-    wp_schedule_event( $next - ( get_option( 'gmt_offset' ) * HOUR_IN_SECONDS ), 'daily', FQ_SYNC_HOOK );
+    // Weekly, not nightly. Measured: 477 posts over five months yield about
+    // 45 approved items — roughly nine a month — so a nightly run mostly
+    // finds nothing and scatters the review queue into ones and twos. Weekly
+    // gives a batch worth sitting down with. The 45-day lookback still picks
+    // up content cross-posted to another channel days after it first ran.
+    $next = strtotime( 'next monday 03:00', current_time( 'timestamp' ) );
+    wp_schedule_event( $next - ( get_option( 'gmt_offset' ) * HOUR_IN_SECONDS ), 'weekly', FQ_SYNC_HOOK );
 }
 
 // ============================================================

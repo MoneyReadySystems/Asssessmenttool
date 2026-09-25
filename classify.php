@@ -63,6 +63,23 @@ function fq_get_classify_prompt() {
         . "Give a short reason for each decision.\n\nPOSTS:\n{{POSTS}}";
 }
 
+/**
+ * Tidy a generated title.
+ *
+ * The prompt asks for a complete phrase and the schema describes one, but a
+ * title is visitor-facing and a stray ellipsis or trailing comma reads as a
+ * bug, so it is worth the few lines to be certain.
+ */
+function fq_clean_title( $title ) {
+    $t = trim( wp_strip_all_tags( (string) $title ) );
+    $t = preg_replace( '/\s+/', ' ', $t );
+    // Drop trailing ellipses (real or three dots) and dangling punctuation.
+    $t = preg_replace( '/[\s\.,;:\x{2026}]+$/u', '', $t );
+    // Keep a legitimate closing question or exclamation mark.
+    if ( preg_match( '/[?!]$/u', trim( (string) $title ) ) ) { $t .= substr( trim( (string) $title ), -1 ); }
+    return mb_substr( $t, 0, 120 );
+}
+
 /** Items awaiting a decision: stored, but with no status yet. */
 function fq_get_unclassified_posts( $limit ) {
     return get_posts( [
@@ -162,6 +179,13 @@ function fq_classify_pending() {
             update_post_meta( $p->ID, FQ_META_REASON, sanitize_text_field( $decision['reason'] ?? '' ) );
             fq_set_social_topics( $p->ID, (array) ( $decision['topics'] ?? [] ) );
 
+            // Social copy has no title of its own. Without a written one the
+            // card shows the first few words of the post and an ellipsis.
+            $title = fq_clean_title( $decision['title'] ?? '' );
+            if ( $title !== '' && $title !== $p->post_title ) {
+                wp_update_post( [ 'ID' => $p->ID, 'post_title' => $title ] );
+            }
+
             // An approved item with no usable topic can never be matched, so
             // it is not really approved. Send it for review instead.
             if ( $status === 'classified' ) {
@@ -204,9 +228,10 @@ function fq_classify_request( $prompt ) {
                 'index'  => [ 'type' => 'integer' ],
                 'status' => [ 'type' => 'string', 'enum' => [ 'classified', 'excluded', 'needs_review' ] ],
                 'topics' => [ 'type' => 'array', 'items' => [ 'type' => 'string' ] ],
+                'title'  => [ 'type' => 'string', 'description' => 'Six to nine words, sentence case, a complete phrase, never ending in an ellipsis.' ],
                 'reason' => [ 'type' => 'string' ],
             ],
-            'required'             => [ 'index', 'status', 'topics', 'reason' ],
+            'required'             => [ 'index', 'status', 'topics', 'title', 'reason' ],
             'additionalProperties' => false,
         ] ] ],
         'required'             => [ 'results' ],
@@ -270,10 +295,10 @@ function fq_schedule_classification() {
     if ( wp_next_scheduled( FQ_CLASSIFY_HOOK ) ) return;
     if ( ! defined( 'FQ_API_KEY' ) || ! FQ_API_KEY || FQ_API_KEY === 'YOUR_API_KEY_HERE' ) return;
 
-    // 04:00, an hour after the sync, so there is something to classify and
-    // the two jobs never overlap.
-    $next = strtotime( 'tomorrow 04:00', current_time( 'timestamp' ) );
-    wp_schedule_event( $next - ( get_option( 'gmt_offset' ) * HOUR_IN_SECONDS ), 'daily', FQ_CLASSIFY_HOOK );
+    // Weekly, matching the sync, an hour later so there is something to
+    // classify and the two jobs never overlap.
+    $next = strtotime( 'next monday 04:00', current_time( 'timestamp' ) );
+    wp_schedule_event( $next - ( get_option( 'gmt_offset' ) * HOUR_IN_SECONDS ), 'weekly', FQ_CLASSIFY_HOOK );
 }
 
 // ============================================================

@@ -305,7 +305,11 @@ function fq_get_social_library_items() {
         if ( ! $topics ) continue;     // unreachable without a mapped topic
 
         $out[] = [
-            'title'       => $p->post_title,
+            // Backstop: a classified item should already carry a written
+            // title, but never show a visitor one that trails off.
+            'title'       => function_exists( 'fq_clean_title' )
+                                ? fq_clean_title( $p->post_title )
+                                : $p->post_title,
             'url'         => $channels[0]['url'],
             'description' => fq_cap_words( wp_strip_all_tags( $p->post_content ) ),
             'topics'      => $topics,

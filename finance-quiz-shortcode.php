@@ -871,6 +871,10 @@ function fq_proxy_handler() {
             'format'      => $src['format'] ?? 'article',
             'topics'      => (array)($src['topics'] ?? []),
             'reason'      => (string)($rec['reason'] ?? ''),
+            // Social items carry every channel they ran on, so the card can
+            // offer "also on TikTok" rather than silently picking one.
+            // 69% of approved social items are on two or more.
+            'channels'    => (array)($src['channels'] ?? []),
         ];
     }, $recs)));
 
@@ -1259,17 +1263,40 @@ function finance_quiz_shortcode() {
       /* Cards: no left bar, no border. One shadow treatment everywhere, the
          same as the volunteer portal's. */
       #fq-wrap .fq-cards{display:grid;gap:14px}
+      /* width:100% is load-bearing here for the same reason as the quiz
+         options: as a grid item this shrinks to its content otherwise, and
+         every card ends up a different width. */
       #fq-wrap .fq-card{
-        display:block;background:#fff;border:none;border-radius:16px;
-        padding:18px 20px;text-decoration:none;color:var(--mr-fine-print);
+        display:block !important;width:100% !important;
+        background:#fff;border:none;border-radius:16px;
+        padding:18px 20px;color:var(--mr-fine-print);cursor:pointer;
         box-shadow:var(--fq-shadow);
         transition:box-shadow .25s ease, transform .25s ease;
       }
       #fq-wrap .fq-card:hover{box-shadow:var(--fq-shadow-hover);transform:translateY(-2px)}
       /* Two levels, not three: the title leads, the reason supports it. */
-      #fq-wrap .fq-card-title{font-family:var(--font-headline);font-weight:700;font-size:1.02rem;line-height:1.3;margin:0 0 6px;color:var(--mr-fine-print)}
+      #fq-wrap .fq-card-title{
+        display:block;font-family:var(--font-headline);font-weight:700;
+        font-size:1.02rem;line-height:1.3;margin:0 0 6px;
+        color:var(--mr-fine-print);text-decoration:none;
+      }
+      #fq-wrap .fq-card:hover .fq-card-title{text-decoration:underline;text-underline-offset:2px}
       #fq-wrap .fq-card-reason{font-family:var(--font-body);font-size:.86rem;font-weight:400;line-height:1.5;color:#4A4A4A;margin:0}
-      #fq-wrap .fq-card-fmt{display:inline-block;font-family:var(--font-body);font-size:.72rem;font-weight:700;color:#fff;background:var(--mr-fiver);border-radius:4px;padding:4px 10px;margin-top:12px}
+      /* Actions: left-aligned with the text above them, and every channel
+         gets the same weight. An item on Instagram and TikTok offers both
+         equally rather than burying one on the right. */
+      #fq-wrap .fq-card-foot{display:flex;align-items:center;justify-content:flex-start;gap:8px;flex-wrap:wrap;margin-top:14px}
+      /* margin:0 is load-bearing. The theme applies `margin: 0 auto` widely,
+         which centred each button in its flex line instead of grouping them
+         to the left. Same rule that centred the progress bar fill. */
+      #fq-wrap .fq-card-action{
+        display:inline-block;margin:0 !important;
+        font-family:var(--font-body);font-size:.78rem;font-weight:700;
+        color:#fff;background:var(--mr-fiver);border-radius:4px;padding:7px 14px;
+        text-decoration:none;line-height:1.3;white-space:nowrap;
+        transition:background .15s ease;
+      }
+      #fq-wrap .fq-card-action:hover{background:#14304a;color:#fff;text-decoration:none}
 
       #fq-wrap .fq-cta{margin-top:22px;padding:18px 20px;background:var(--mr-fiver);border-radius:16px;display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
       #fq-wrap .fq-cta p:first-child{font-family:var(--font-headline);font-size:.92rem;font-weight:700;color:#fff;margin:0 0 2px}
@@ -1416,6 +1443,11 @@ function finance_quiz_shortcode() {
       const CLIENT_TIMEOUT_MS = <?php echo (int) FQ_CLIENT_TIMEOUT * 1000; ?>;
       const STEPS      = 4;
       const LOAD_MSGS  = ['Searching our library…','Matching to your goals…','Checking your preferences…','Almost there…'];
+      // Buffer's service slugs, as a person would write them.
+      const SERVICE_NAMES = {
+        instagram:'Instagram', tiktok:'TikTok', youtube:'YouTube',
+        linkedin:'LinkedIn', facebook:'Facebook', bluesky:'Bluesky', twitter:'X'
+      };
       let ans = {topics:[], experience:null, goal:null, format:null};
       let resultType = null;
       let loadTimer  = null;
@@ -1548,12 +1580,12 @@ function finance_quiz_shortcode() {
                 format = String(r.format      || ''),
                 topic  = String((r.topics && r.topics[0]) || '');
 
-          const card = document.createElement('a');
+          // The card is a div, not one big anchor, because social items can
+          // carry several links: the title opens the primary one and "also on"
+          // offers the rest. Nesting anchors is invalid, and one giant link
+          // with a long aria-label was worse for screen readers anyway.
+          const card = document.createElement('div');
           card.className = 'fq-card';
-          card.href      = href;
-          card.target    = '_blank';
-          card.rel       = 'noopener';
-          card.setAttribute('aria-label', title + ' — ' + reason + ' — opens in a new tab');
           card.dataset.title  = title;
           card.dataset.url    = href;
           card.dataset.topic  = topic;
@@ -1566,14 +1598,68 @@ function finance_quiz_shortcode() {
             if(hidden) el.setAttribute('aria-hidden','true');
             return el;
           };
+
           // Two levels of information, not three. The title leads; the reason
           // supports it. The library description is deliberately not shown:
           // it duplicated the title on articles with no summary text, ran to a
           // wall of text on those that fell back to body copy, and said
           // roughly what the reason already says — better.
-          card.appendChild(part('div', 'fq-card-title',  title,  false));
+          const titleLink = document.createElement('a');
+          titleLink.className = 'fq-card-title';
+          titleLink.href      = href;
+          titleLink.target    = '_blank';
+          titleLink.rel       = 'noopener';
+          titleLink.textContent = title;
+          titleLink.appendChild(Object.assign(document.createElement('span'), {
+            className: 'fq-sr-only', textContent: ' (opens in a new tab)'
+          }));
+          card.appendChild(titleLink);
+
           if (reason) card.appendChild(part('div', 'fq-card-reason', reason, false));
-          card.appendChild(part('span', 'fq-card-fmt', fmt[format]||format, true));
+
+          // One action button per place the content lives, all the same
+          // weight. "Social post" told a visitor nothing about where they
+          // were going; "View on TikTok" does.
+          const foot = document.createElement('div');
+          foot.className = 'fq-card-foot';
+
+          const action = (label, url)=>{
+            const a = document.createElement('a');
+            a.className = 'fq-card-action';
+            a.href      = url;
+            a.target    = '_blank';
+            a.rel       = 'noopener';
+            a.textContent = label;
+            a.appendChild(Object.assign(document.createElement('span'), {
+              className: 'fq-sr-only', textContent: ' (opens in a new tab)'
+            }));
+            a.addEventListener('click', ev=>ev.stopPropagation());
+            return a;
+          };
+
+          const channels = (r.channels||[])
+            .map(c=>({ service:c.service, url:safeHttpUrl(c.url) }))
+            .filter(c=>c.url);
+
+          if (channels.length) {
+            channels.forEach(c=>{
+              const name = SERVICE_NAMES[c.service] || c.service;
+              foot.appendChild(action(
+                (c.service === 'youtube' ? 'Watch on ' : 'View on ') + name,
+                c.url
+              ));
+            });
+          } else {
+            foot.appendChild(action(format === 'video' ? 'Watch video' : 'Read article', href));
+          }
+          card.appendChild(foot);
+
+          // The whole card stays clickable as a convenience; the title anchor
+          // is the real link for keyboard and screen-reader users.
+          card.addEventListener('click', ev=>{
+            if (ev.target.closest('a')) return;   // a link handled it
+            window.open(href, '_blank', 'noopener');
+          });
 
           // Click tracking, attached at creation rather than by re-querying
           // the document afterwards.
