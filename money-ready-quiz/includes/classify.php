@@ -37,7 +37,7 @@ function fq_get_classify_prompt() {
     static $template = null;
     if ( $template !== null ) return $template;
 
-    $path = __DIR__ . '/' . FQ_CLASSIFY_PROMPT_FILE;
+    $path = FQ_DATA_DIR . FQ_CLASSIFY_PROMPT_FILE;
     $raw  = is_readable( $path ) ? file_get_contents( $path ) : false;
 
     if ( $raw !== false ) {

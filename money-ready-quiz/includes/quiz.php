@@ -67,24 +67,6 @@ if ( ! defined( 'FQ_DB_VERSION' ) )         define( 'FQ_DB_VERSION',        '1.0
 if ( ! defined( 'FQ_GA4_MEASUREMENT_ID' ) ) define( 'FQ_GA4_MEASUREMENT_ID','G-XXXXXXXXXX' ); // ⚠️ Replace with your GA4 Measurement ID
 
 // ============================================================
-// COMPANION FILES
-//
-// social-posts.php must deploy alongside this file, as topics.json and
-// prompt.md do. Loaded defensively so a partial deployment degrades to
-// "no social content" rather than a fatal error on every page.
-// ============================================================
-foreach ( [ 'social-posts.php', 'buffer-sync.php', 'classify.php' ] as $fq_companion ) {
-    if ( is_readable( __DIR__ . '/' . $fq_companion ) ) {
-        require_once __DIR__ . '/' . $fq_companion;
-    } else {
-        error_log( sprintf(
-            '[finance-quiz] %s is missing — social content will be unavailable.', $fq_companion
-        ) );
-    }
-}
-unset( $fq_companion );
-
-// ============================================================
 // TOPIC REGISTRY — single source of truth
 //
 // Reads topics.json (sitting alongside this file) and serves three consumers:
@@ -97,7 +79,7 @@ function fq_get_topics() {
     static $topics = null;
     if ( $topics !== null ) return $topics;
 
-    $path = __DIR__ . '/' . FQ_TOPICS_FILE;
+    $path = FQ_DATA_DIR . FQ_TOPICS_FILE;
     $raw  = is_readable( $path ) ? file_get_contents( $path ) : false;
     $data = ( $raw !== false ) ? json_decode( $raw, true ) : null;
 
@@ -175,7 +157,7 @@ function fq_get_prompt_template() {
     static $template = null;
     if ( $template !== null ) return $template;
 
-    $path = __DIR__ . '/' . FQ_PROMPT_FILE;
+    $path = FQ_DATA_DIR . FQ_PROMPT_FILE;
     $raw  = is_readable( $path ) ? file_get_contents( $path ) : false;
 
     if ( $raw !== false ) {
@@ -296,8 +278,11 @@ function fq_maybe_create_table() {
     fq_create_table();
     update_option( 'fq_db_version', FQ_DB_VERSION );
 }
-add_action( 'after_switch_theme', 'fq_maybe_create_table' );
-add_action( 'init',               'fq_maybe_create_table' );
+// Activation is what normally creates the table (see money-ready-quiz.php).
+// This stays as a self-heal for the cases activation misses: files updated in
+// place while the plugin is active, or a schema version bump shipped in an
+// update. It costs one autoloaded option read on a normal request.
+add_action( 'init', 'fq_maybe_create_table' );
  
 // ============================================================
 // SOCIAL POSTS — removed, pending the Buffer sync (decision 2)
@@ -996,6 +981,7 @@ function fq_analytics_page() {
       </h1>
  
       <?php
+      if ( function_exists( 'fq_render_health_panel' ) )   { fq_render_health_panel(); }
       if ( function_exists( 'fq_render_sync_panel' ) )     { fq_render_sync_panel(); }
       if ( function_exists( 'fq_render_classify_panel' ) ) { fq_render_classify_panel(); }
       ?>
