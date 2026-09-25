@@ -73,7 +73,7 @@ if ( ! defined( 'FQ_GA4_MEASUREMENT_ID' ) ) define( 'FQ_GA4_MEASUREMENT_ID','G-X
 // prompt.md do. Loaded defensively so a partial deployment degrades to
 // "no social content" rather than a fatal error on every page.
 // ============================================================
-foreach ( [ 'social-posts.php', 'buffer-sync.php' ] as $fq_companion ) {
+foreach ( [ 'social-posts.php', 'buffer-sync.php', 'classify.php' ] as $fq_companion ) {
     if ( is_readable( __DIR__ . '/' . $fq_companion ) ) {
         require_once __DIR__ . '/' . $fq_companion;
     } else {
@@ -991,7 +991,10 @@ function fq_analytics_page() {
         Quiz Analytics
       </h1>
  
-      <?php if ( function_exists( 'fq_render_sync_panel' ) ) { fq_render_sync_panel(); } ?>
+      <?php
+      if ( function_exists( 'fq_render_sync_panel' ) )     { fq_render_sync_panel(); }
+      if ( function_exists( 'fq_render_classify_panel' ) ) { fq_render_classify_panel(); }
+      ?>
 
       <!-- Date filter -->
       <div style="margin:16px 0;display:flex;align-items:center;gap:8px;flex-wrap:wrap">

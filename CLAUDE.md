@@ -344,7 +344,28 @@ reached, so there is more history available than one run will take.
 Classification cost for a full backfill: 477 items at ~40 per request is
 roughly a dozen calls.
 
-## Classifier calibration (run 2026-09-25 on 40 real unique items)
+## Full pipeline run (2026-09-25) — sync, classify, recommend
+
+End to end on real data: **1,000 posts fetched → 477 unique items → 45
+approved, 409 excluded, 23 for review.** 12 batches, 276s. No invented
+taxonomy terms. Library went 50 → 95.
+
+**69% of approved items are multi-channel**, so the "also on" links apply to
+most social recommendations.
+
+**The approval rate needs a judgement call.** The 40-item calibration approved
+25%; the full 477 approved only **9.4%**. Two reasons: the calibration sampled
+the most recent items, where teaching content is denser, and the prompt has
+since gained an explicit rule that an announcement is not content. 45 usable
+items from five months of posting may be right, or the rule may be too
+strict — **read the excluded list and decide**. That line is the single
+biggest lever on how much social content reaches visitors.
+
+The classifier twice reported it could not decide because the post text was
+cut off. `FQ_CLASSIFY_TEXT_CHARS` was raised from 400 to 900 in response;
+that change has not itself been re-run at scale.
+
+## Classifier calibration (earlier run, 2026-09-25, 40 real unique items)
 
 Ran the proposed classification prompt against real Buffer content before
 building anything. `claude-opus-5`, `effort: medium` — a nightly batch, so
