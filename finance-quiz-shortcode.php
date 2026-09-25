@@ -5,7 +5,7 @@
  * Features:
  *  - WCAG 2.1 AA compliant
  *  - Dynamic content library pulled from WordPress (auto-updates on publish)
- *  - Manual social media posts merged in
+ *  - Social posts pending: Buffer sync + Claude classification (not built)
  *  - Library transient caching (1 hour)
  *  - Answer combination caching (24 hours)
  *  - Topic pre-filtering before the AI call
@@ -282,17 +282,28 @@ add_action( 'after_switch_theme', 'fq_maybe_create_table' );
 add_action( 'init',               'fq_maybe_create_table' );
  
 // ============================================================
-// ⚙️  SOCIAL MEDIA POSTS
+// SOCIAL POSTS — removed, pending the Buffer sync (decision 2)
+//
+// Five posts used to be hardcoded here and merged into the library. They
+// have been removed rather than carried forward, because:
+//
+//   - They were a maintenance trap: a fixed list that silently went stale,
+//     with no owner and no way for the content team to update it.
+//   - One ("How to avoid overspending online") duplicated a YouTube video
+//     that also reaches the pool through the Learning Hub, so the same item
+//     could be recommended twice on one results page.
+//   - One was tagged `property`, a topic now hidden as `planned`, so no
+//     answer combination could ever surface it.
+//
+// Their replacement is the nightly Buffer sync writing to an
+// `fq_social_post` custom post type, with Claude classifying each item
+// before it can enter the pool. Until that exists the library is Learning
+// Hub articles only.
+//
+// Do not reintroduce a hardcoded array here. If social content is needed
+// before the sync is ready, add it as draft `fq_social_post` entries so it
+// goes through the same review path as everything else.
 // ============================================================
-function fq_get_social_posts() {
-    return [
-        ["title" => "How to avoid overspending online",                          "url" => "https://youtube.com/shorts/emnKwcmmm1E?si=LBxYzsQMKlTZpCod",        "description" => "Have you ever bought something online you don't really need? Top five tips to avoid overspending online.",                                                                                    "topics" => ["spending"],  "format" => "video",  "level" => "all"],
-        ["title" => "Nobody tells you this stuff before getting your first mortgage", "url" => "https://www.instagram.com/p/DU5-lu0DxMS/",                       "description" => "From surprise upfront costs to the emotional side of it all, here's the stuff nobody tells you before getting your first mortgage.",                                                             "topics" => ["property"],  "format" => "social", "level" => "beginner"],
-        ["title" => "Choosing the right savings account",                        "url" => "https://www.instagram.com/p/DO6GeiHDM11/?img_index=1",               "description" => "Not all savings accounts are the same, and choosing the right one can make a real difference to your financial goals.",                                                                          "topics" => ["banking"],   "format" => "social", "level" => "all"],
-        ["title" => "How parents can teach kids financial smarts",               "url" => "https://www.instagram.com/p/DIyLyc0t6ww/?img_index=1",               "description" => "Talking about money and teaching kids how to manage it will have significant benefits on their future financial wellbeing.",                                                                       "topics" => ["saving"],    "format" => "social", "level" => "beginner"],
-        ["title" => "What is phishing?",                                         "url" => "https://www.instagram.com/p/DMaK5JgOC2i/",                           "description" => "How to recognise the warning signs, protect your personal information, and keep your money safe from scammers.",                                                                                  "topics" => ["scams"],     "format" => "video",  "level" => "all"],
-    ];
-}
  
 // ============================================================
 // ⚙️  FALLBACK RECOMMENDATIONS
@@ -440,7 +451,9 @@ function fq_get_content_library() {
             'format'      => fq_resolve_format($post),
         ];
     }
-    $library = array_merge($library, fq_get_social_posts());
+    // Social posts will be merged in here once the Buffer sync (decision 2)
+    // populates the fq_social_post post type. Until then the library is
+    // Learning Hub articles only.
     set_transient($cache_key, $library, FQ_CACHE_DURATION);
     return $library;
 }
