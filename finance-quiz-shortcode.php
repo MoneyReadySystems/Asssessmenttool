@@ -73,11 +73,16 @@ if ( ! defined( 'FQ_GA4_MEASUREMENT_ID' ) ) define( 'FQ_GA4_MEASUREMENT_ID','G-X
 // prompt.md do. Loaded defensively so a partial deployment degrades to
 // "no social content" rather than a fatal error on every page.
 // ============================================================
-if ( is_readable( __DIR__ . '/social-posts.php' ) ) {
-    require_once __DIR__ . '/social-posts.php';
-} else {
-    error_log( '[finance-quiz] social-posts.php is missing — social content will be unavailable.' );
+foreach ( [ 'social-posts.php', 'buffer-sync.php' ] as $fq_companion ) {
+    if ( is_readable( __DIR__ . '/' . $fq_companion ) ) {
+        require_once __DIR__ . '/' . $fq_companion;
+    } else {
+        error_log( sprintf(
+            '[finance-quiz] %s is missing — social content will be unavailable.', $fq_companion
+        ) );
+    }
 }
+unset( $fq_companion );
 
 // ============================================================
 // TOPIC REGISTRY — single source of truth
@@ -544,6 +549,54 @@ function fq_answer_cache_key($answers) {
     ]));
 }
 /**
+ * Last-line guard against showing the same thing twice on one results page.
+ *
+ * The sync already de-duplicates on a 20-word fingerprint, but a handful of
+ * items still slip through — measured at 13 near-duplicate pairs in 255
+ * groups. The cause is multi-word @mentions: "@Darren Collins" has "@Darren"
+ * stripped and leaves "Collins" behind, while "@mrcollinsunbound" disappears
+ * entirely, so every following word shifts by one and the fingerprints differ.
+ *
+ * This is deliberately NOT fixed by loosening the sync's matching. At the
+ * similarity levels needed to catch those pairs, two genuinely different job
+ * adverts ("Wales team" and "South Wales team") also merge — word-set
+ * similarity cannot tell that "South" is the entire distinction.
+ *
+ * So storage stays permissive and presentation is strict. Comparing three to
+ * five already-chosen items is cheap, and the worst case is dropping one of
+ * two near-identical cards, which is the desired behaviour anyway.
+ */
+function fq_drop_near_duplicates($recs, $threshold = 0.9) {
+    $words = function ($text) {
+        $t = mb_strtolower(wp_strip_all_tags((string) $text));
+        $t = preg_replace('/[^\p{L}\p{N}\s]/u', ' ', $t);
+        return array_unique(array_filter(explode(' ', trim(preg_replace('/\s+/', ' ', $t)))));
+    };
+
+    $kept = [];
+    $keptWords = [];
+    foreach ($recs as $rec) {
+        $w = $words($rec['title'] ?? '');
+        if (!$w) { $kept[] = $rec; $keptWords[] = $w; continue; }
+
+        $duplicate = false;
+        foreach ($keptWords as $seen) {
+            if (!$seen) continue;
+            $union = count(array_unique(array_merge($w, $seen)));
+            $sim   = $union ? count(array_intersect($w, $seen)) / $union : 0;
+            if ($sim >= $threshold) { $duplicate = true; break; }
+        }
+        if ($duplicate) {
+            error_log(sprintf('[finance-quiz] Dropped a near-duplicate recommendation: %s', $rec['title'] ?? '?'));
+            continue;
+        }
+        $kept[] = $rec;
+        $keptWords[] = $w;
+    }
+    return array_values($kept);
+}
+
+/**
  * Trim the library down to what the model needs to choose well: title, url,
  * topics, format and a shortened description. `level` is deliberately dropped
  * — it is absent on articles and only set on hardcoded social posts, so
@@ -826,6 +879,8 @@ function fq_proxy_handler() {
         wp_send_json_success(['recs' => fq_get_fallbacks(), 'fallback' => true]);
     }
 
+    $recs = fq_drop_near_duplicates($recs);
+
     set_transient($ans_cache_key, $recs, FQ_ANSWER_CACHE_TTL);
     wp_send_json_success(['recs' => $recs, 'fallback' => false]);
 }
@@ -936,6 +991,8 @@ function fq_analytics_page() {
         Quiz Analytics
       </h1>
  
+      <?php if ( function_exists( 'fq_render_sync_panel' ) ) { fq_render_sync_panel(); } ?>
+
       <!-- Date filter -->
       <div style="margin:16px 0;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
         <strong>Show last:</strong>

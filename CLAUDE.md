@@ -305,6 +305,45 @@ omit them):
    programme news rather than learning content — but if it does not, topic
    pre-filtering is what keeps the per-request prompt small.
 
+## De-duplication happens in two places, on purpose
+
+**Storage is permissive; presentation is strict.** Worth understanding before
+changing either.
+
+1. **At sync time** — group on the 20-word fingerprint. Safe, cheap, and never
+   merges things that are genuinely different.
+2. **At recommendation time** — `fq_drop_near_duplicates()` compares the three
+   to five chosen items and drops any pair of near-identical titles.
+
+The second exists because the first cannot be made tight enough safely.
+Measured on real data: 13 near-duplicate pairs survive the fingerprint out of
+255 groups, caused by **multi-word @mentions**. `@Darren Collins` has
+`@Darren` stripped and leaves `Collins` behind, while `@mrcollinsunbound`
+vanishes entirely, so every following word shifts by one.
+
+**Do not "fix" this by loosening the sync's matching.** At the similarity
+threshold needed to catch those pairs (0.97), two genuinely different job
+adverts — "Wales team" and "South Wales team" — also merge, because word-set
+similarity cannot see that "South" is the entire distinction. Tightening
+storage trades a cosmetic duplicate for real data loss. The presentation guard
+has no such risk: the worst case is dropping one of two near-identical cards,
+which is what we want anyway.
+
+## Buffer sync — measured behaviour (2026-09-25)
+
+Full run against the live account: 20 pages, **1,000 posts fetched, 273
+skipped as unusable, 477 unique items**, 31.7s. The 20-page ceiling was
+reached, so there is more history available than one run will take.
+
+- Multi-channel items: **148 of 477 (31%)**, including one on five channels.
+- Re-running created nothing and updated all 477 — the sync is idempotent.
+- An incremental run fetched 100 posts against the full run's 1,000.
+- Items arrive with **no status**, so nothing is recommendable until the
+  classifier runs. Verified: after a full sync the library was still 50.
+
+Classification cost for a full backfill: 477 items at ~40 per request is
+roughly a dozen calls.
+
 ## Classifier calibration (run 2026-09-25 on 40 real unique items)
 
 Ran the proposed classification prompt against real Buffer content before
