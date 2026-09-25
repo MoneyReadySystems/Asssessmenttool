@@ -145,9 +145,15 @@ pensions article learns that the tool does not work.)
 
 Two things this table tells you editorially:
 
-1. **University has one article.** A visitor selecting "Student living" and
-   nothing else gets exactly one recommendation. Student content is the thinnest
-   gap in the Learning Hub.
+1. **University has one article.** In the Learning Hub, that is still the
+   thinnest topic by a distance.
+
+   *Update, since social posts were connected:* a visitor selecting "Student
+   living" now gets six items rather than one, because five approved social
+   posts carry that topic — on student loan repayments, budgeting at
+   university, and the real cost of moving. So the quiz no longer looks broken
+   on that topic. The Learning Hub gap itself is unchanged, and an article
+   still outranks a social post for depth.
 2. **Four intended topics have no content at all** — Insurance, Pensions,
    Renting & Mortgages, and Money & Mental Health. They are deliberately hidden
    from the quiz for now rather than offered and leading nowhere. The moment an
@@ -248,8 +254,11 @@ both would be duplicated effort for no gain.
 
 ## 5. A small bonus: how an item gets labelled "Video"
 
-Recommendation cards carry a format badge — Article, Video or Social post. For
-Learning Hub items, there is no field you can set to control this.
+Every card now ends in one or more action buttons rather than a format badge —
+"Read article" for a Learning Hub item, or "View on Instagram" / "View on
+TikTok" / "Watch on YouTube" for a social post, one button per place the
+content exists. For Learning Hub items there is no field you can set to
+control this.
 
 The tool works it out by looking for an embedded video in the item's body or
 ACF `content` field. If it finds a YouTube, `youtu.be` or Vimeo link, or an
@@ -270,6 +279,33 @@ the 52 items met the embed test at the time of verification.
 > Format is passed to the AI and shown on the card, but it is not a hard filter
 > — a visitor who says they prefer videos is not prevented from being shown a
 > good article.
+
+---
+
+## 6. You will now see social posts in the Topic taxonomy
+
+Since the Buffer connection went in, Money Ready's social posts are stored in
+WordPress too, as a hidden post type, and they carry **the same Topic terms**
+your articles do.
+
+What this means for you day to day:
+
+1. **Topic term counts will look higher than your article count.** A term
+   showing 21 items may be eight articles and thirteen social posts.
+2. **You may see unfamiliar entries under Social posts** in the admin menu.
+   Those arrive automatically from Buffer each week. They are not pages, have
+   no URL on the site, and link out to Instagram, TikTok and so on.
+3. **You do not need to tag them.** Claude assigns their topics on arrival,
+   restricted to the same vocabulary, and anything borderline waits in a
+   review queue.
+4. **Please still flag topic renames** (section 3). Renaming a term now
+   affects articles, social posts and the quiz at once.
+
+Worth knowing for context: of roughly 480 social posts, about 45 are judged to
+be teaching content. The rest — fundraising, awards, job adverts, event
+recaps, media appearances — are filtered out and never shown to a visitor.
+Social posts supplement the Learning Hub in the recommender; they do not
+replace it, and an article is still the more substantial thing to be sent.
 
 ---
 
