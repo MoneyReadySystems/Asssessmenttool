@@ -67,6 +67,19 @@ if ( ! defined( 'FQ_DB_VERSION' ) )         define( 'FQ_DB_VERSION',        '1.0
 if ( ! defined( 'FQ_GA4_MEASUREMENT_ID' ) ) define( 'FQ_GA4_MEASUREMENT_ID','G-XXXXXXXXXX' ); // ⚠️ Replace with your GA4 Measurement ID
 
 // ============================================================
+// COMPANION FILES
+//
+// social-posts.php must deploy alongside this file, as topics.json and
+// prompt.md do. Loaded defensively so a partial deployment degrades to
+// "no social content" rather than a fatal error on every page.
+// ============================================================
+if ( is_readable( __DIR__ . '/social-posts.php' ) ) {
+    require_once __DIR__ . '/social-posts.php';
+} else {
+    error_log( '[finance-quiz] social-posts.php is missing — social content will be unavailable.' );
+}
+
+// ============================================================
 // TOPIC REGISTRY — single source of truth
 //
 // Reads topics.json (sitting alongside this file) and serves three consumers:
@@ -451,9 +464,12 @@ function fq_get_content_library() {
             'format'      => fq_resolve_format($post),
         ];
     }
-    // Social posts will be merged in here once the Buffer sync (decision 2)
-    // populates the fq_social_post post type. Until then the library is
-    // Learning Hub articles only.
+    // Approved social posts, from the fq_social_post store. Empty until the
+    // Buffer sync runs; nothing reaches here without a `classified` status.
+    if ( function_exists( 'fq_get_social_library_items' ) ) {
+        $library = array_merge( $library, fq_get_social_library_items() );
+    }
+
     set_transient($cache_key, $library, FQ_CACHE_DURATION);
     return $library;
 }
