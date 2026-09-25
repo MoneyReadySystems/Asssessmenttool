@@ -275,11 +275,27 @@ omit them):
 
 **Three things the sync must handle, all measured:**
 
-1. **Cross-posting is heavy.** 400 posts represent only **233 distinct pieces
-   of content**. 62 items were posted to more than one channel, accounting for
-   157 posts. Without de-duplication a visitor could be shown the same savings
-   tip from TikTok *and* Instagram on one results page. De-duplicate on
-   normalised post text, not URL — the URLs differ per channel.
+1. **Cross-posting is heavy, and naive de-duplication does not catch it.**
+   De-duplicate on a *fingerprint* of the text, not the raw text and not the
+   URL — the URLs differ per channel, and the copy is edited per platform
+   (different @mentions, different hashtags, curly vs straight apostrophes,
+   different emoji). Measured over the same 314 usable posts:
+
+   | Strategy | Distinct items | Duplicates collapsed |
+   |---|---|---|
+   | Raw first 150 chars, lowercased | 230 | 84 |
+   | Fingerprint, first 30 words | 224 | 90 |
+   | **Fingerprint, first 20 words** | **212** | **102** |
+   | Fingerprint, first 12 words | 203 | 111 |
+   | Fingerprint, first 8 words | 197 | 117 |
+
+   Fingerprint = lowercase, strip URLs, strip `@mentions` and `#hashtags`,
+   strip all emoji and punctuation, collapse whitespace, take the first N
+   words. **Use 20 words.** Raw matching missed real duplicates — one item
+   ("Talking to your child about money") ran on five channels and was scored
+   twice by the classifier because of it. Going below 20 starts over-merging:
+   at 12 words, four *different* job adverts (Wales, South Wales, North East
+   ×2) collapsed into one item, because the distinguishing words come later.
 2. **Roughly a fifth of posts are unusable**: 72 have empty `text` (nothing
    for the classifier to read), 22 are stories whose links expire after 24
    hours, and 11 have no `externalLink`. 314 of 400 are usable at all.
@@ -288,6 +304,52 @@ omit them):
    remove most of it — the sample is dominated by fundraising, awards and
    programme news rather than learning content — but if it does not, topic
    pre-filtering is what keeps the per-request prompt small.
+
+## Classifier calibration (run 2026-09-25 on 40 real unique items)
+
+Ran the proposed classification prompt against real Buffer content before
+building anything. `claude-opus-5`, `effort: medium` — a nightly batch, so
+judgement matters more than latency. 28s, 7.3k in / 2.6k out.
+
+| Status | Share |
+|---|---|
+| excluded | 73% |
+| classified | 25% |
+| needs_review | 3% |
+
+**It behaved well.** No invented topic names. Correctly excluded job adverts,
+fundraising challenges, award shortlistings, office news, partner
+announcements, campaign launches and research-findings posts. Correctly kept
+posts on choosing a savings account, reading a payslip, student budgeting,
+student loans, and saving money while living sustainably. The single
+`needs_review` was a genuinely borderline International Literacy Day post
+defining "financial literacy" — part education, part positioning. Exactly the
+case that status exists for.
+
+**Implication for volume:** if ~25% survives, 212 unique items yields roughly
+50 social items. With 50 Learning Hub articles that is ~100 in the pool —
+right at the documented 100–120 comfort ceiling, so topic pre-filtering stays
+necessary rather than optional.
+
+**Keep this calibration honest.** Re-run it after any change to the
+classification prompt or to `topics.json`, and read the excluded list rather
+than just the percentages. A classifier that quietly starts excluding good
+content will look identical in the summary numbers.
+
+## "Also on" links — worth building
+
+Ruth's suggestion, and the data supports it: **60% of the items classified as
+learning content were published to two or more channels.** That is understated,
+since it was measured before the fingerprint fix. Most common pairings for
+learning content are `tiktok + instagram`; `linkedin + facebook` dominates
+overall but skews organisational.
+
+One classified item ("Talking to your child about money") ran on **five**
+channels including YouTube. So rather than arbitrarily picking one link, an
+item should store every channel's URL and the card can offer "also on
+Instagram / TikTok". Design `fq_social_post` to hold a set of
+`{service, url}` pairs from the outset rather than a single link field —
+retrofitting that later means a schema change and a resync.
 
 ## Local development environment
 
