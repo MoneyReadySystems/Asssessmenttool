@@ -63,7 +63,28 @@ if ( ! defined( 'FQ_DESC_WORDS' ) )         define( 'FQ_DESC_WORDS',        25 )
 // text on the card — the first rendered test showed a ~120-word paragraph.
 if ( ! defined( 'FQ_DESC_MAX_WORDS' ) )     define( 'FQ_DESC_MAX_WORDS',    40 );
 if ( ! defined( 'FQ_DB_TABLE' ) )           define( 'FQ_DB_TABLE',          'fq_events' ); // without WP prefix — added automatically
-if ( ! defined( 'FQ_DB_VERSION' ) )         define( 'FQ_DB_VERSION',        '1.0' ); // bump when the fq_events schema changes
+if ( ! defined( 'FQ_DB_VERSION' ) )         define( 'FQ_DB_VERSION',        '1.1' ); // bump when the fq_events schema changes
+
+// --- Session tracking -------------------------------------------------
+// A random per-visit id that links someone's quiz completion to the cards
+// they then click, so the dashboard can show a real conversion rate rather
+// than total clicks divided by total completions.
+//
+// It is NOT an identity. No name, no email, no IP, nothing that persists
+// beyond the visit, and nothing that follows anyone between sites.
+//
+// It is only ever set for visitors who have accepted the Analytics category
+// in the site's Civic cookie banner. Without consent the quiz behaves exactly
+// as before and the visit is simply not counted. That is a legal requirement
+// (PECR), not a preference — a session id is "information stored on the
+// user's device" and analytics is not "strictly necessary".
+if ( ! defined( 'FQ_SESSION_COOKIE' ) )     define( 'FQ_SESSION_COOKIE',    'fq_session' );
+// Hours. Deliberately short: we care about one visit, not a returning visitor.
+if ( ! defined( 'FQ_SESSION_HOURS' ) )      define( 'FQ_SESSION_HOURS',     2 );
+// Months to keep event rows. Anonymous totals could be kept indefinitely, but
+// once rows carry a session id they are pseudonymous, and keeping those
+// forever with no reason is harder to justify. Change deliberately.
+if ( ! defined( 'FQ_RETENTION_MONTHS' ) )   define( 'FQ_RETENTION_MONTHS',  24 );
 if ( ! defined( 'FQ_GA4_MEASUREMENT_ID' ) ) define( 'FQ_GA4_MEASUREMENT_ID','G-XXXXXXXXXX' ); // ⚠️ Replace with your GA4 Measurement ID
 
 // ============================================================
@@ -237,22 +258,42 @@ function fq_create_table() {
     $table   = $wpdb->prefix . FQ_DB_TABLE;
     $charset = $wpdb->get_charset_collate();
  
-    $sql = "CREATE TABLE IF NOT EXISTS {$table} (
-        id             BIGINT(20) UNSIGNED NOT NULL AUTO_INCREMENT,
-        event_type     VARCHAR(20)  NOT NULL,          -- 'quiz_complete' or 'card_click'
-        event_time     DATETIME     NOT NULL,
-        topics         VARCHAR(255) DEFAULT NULL,       -- comma-separated topic values
-        confidence     VARCHAR(20)  DEFAULT NULL,
-        goal           VARCHAR(30)  DEFAULT NULL,
-        format_pref    VARCHAR(20)  DEFAULT NULL,
-        result_type    VARCHAR(10)  DEFAULT NULL,       -- 'ai', 'cached', 'fallback'
-        article_title  VARCHAR(255) DEFAULT NULL,
-        article_url    VARCHAR(512) DEFAULT NULL,
-        article_topic  VARCHAR(50)  DEFAULT NULL,
-        article_format VARCHAR(20)  DEFAULT NULL,
-        PRIMARY KEY (id),
-        KEY idx_event_time  (event_time),
-        KEY idx_event_type  (event_type),
+    /*
+     * dbDelta is fussy, and this statement broke all three of its rules when
+     * inherited from the prototype. The upgrade path could never have worked.
+     *
+     *  1. Plain CREATE TABLE, never "IF NOT EXISTS". dbDelta parses the
+     *     statement to work out what to ALTER on an existing table, and
+     *     "IF NOT EXISTS" stops it: the table is created once and every later
+     *     schema change is silently ignored. dbDelta handles existence itself.
+     *  2. Two spaces after PRIMARY KEY. One space and it is not recognised.
+     *  3. No inline "--" comments. dbDelta reads a whole line as a column
+     *     definition, comment included, and generates invalid SQL from it.
+     *
+     * Column meanings, since they can no longer live inline:
+     *   event_type   'quiz_complete' or 'card_click'
+     *   session_id   random, one visit, only with analytics consent
+     *   topics       comma-separated quiz topic slugs
+     *   result_type  'ai', 'cached', 'fallback' or 'no_match'
+     */
+    $sql = "CREATE TABLE {$table} (
+        id BIGINT(20) UNSIGNED NOT NULL AUTO_INCREMENT,
+        event_type VARCHAR(20) NOT NULL,
+        event_time DATETIME NOT NULL,
+        session_id VARCHAR(40) DEFAULT NULL,
+        topics VARCHAR(255) DEFAULT NULL,
+        confidence VARCHAR(20) DEFAULT NULL,
+        goal VARCHAR(30) DEFAULT NULL,
+        format_pref VARCHAR(20) DEFAULT NULL,
+        result_type VARCHAR(10) DEFAULT NULL,
+        article_title VARCHAR(255) DEFAULT NULL,
+        article_url VARCHAR(512) DEFAULT NULL,
+        article_topic VARCHAR(50) DEFAULT NULL,
+        article_format VARCHAR(20) DEFAULT NULL,
+        PRIMARY KEY  (id),
+        KEY idx_event_time (event_time),
+        KEY idx_event_type (event_type),
+        KEY idx_session (session_id),
         KEY idx_article_url (article_url(191))
     ) {$charset};";
  
@@ -645,6 +686,13 @@ function fq_log_handler() {
         'event_type'  => $type,
         'event_time'  => current_time('mysql'),
     ];
+
+    // Present only when the visitor accepted analytics cookies. Constrained
+    // to the shape we generate so a crafted value cannot be stored.
+    $session = (string) ( $raw['session_id'] ?? '' );
+    if ( $session !== '' && preg_match( '/^[A-Za-z0-9-]{8,40}$/', $session ) ) {
+        $data['session_id'] = $session;
+    }
  
     if ($type === 'quiz_complete') {
         $topics = array_map('sanitize_text_field', (array)($raw['topics'] ?? []));
@@ -672,6 +720,42 @@ function fq_log_handler() {
     wp_send_json_success();
 }
  
+// ============================================================
+// RETENTION
+//
+// Anonymous totals could be kept indefinitely. Rows carrying a session id
+// are pseudonymous, and keeping those forever without a reason is harder to
+// justify, so everything older than FQ_RETENTION_MONTHS is deleted weekly.
+//
+// Deletion is by age of the row, not of the session, and is deliberately
+// simple — a data-protection measure nobody has to remember to run.
+// ============================================================
+add_action( 'fq_prune_events', 'fq_prune_old_events' );
+function fq_prune_old_events() {
+    global $wpdb;
+    $table  = $wpdb->prefix . FQ_DB_TABLE;
+    $cutoff = gmdate( 'Y-m-d H:i:s', strtotime( '-' . (int) FQ_RETENTION_MONTHS . ' months' ) );
+
+    $deleted = $wpdb->query( $wpdb->prepare(
+        "DELETE FROM {$table} WHERE event_time < %s", $cutoff
+    ) );
+
+    if ( $deleted ) {
+        error_log( sprintf(
+            '[finance-quiz] Retention: removed %d event(s) older than %d months.',
+            $deleted, FQ_RETENTION_MONTHS
+        ) );
+    }
+    return (int) $deleted;
+}
+
+add_action( 'init', 'fq_schedule_pruning' );
+function fq_schedule_pruning() {
+    if ( wp_next_scheduled( 'fq_prune_events' ) ) return;
+    $next = strtotime( 'next monday 05:00', current_time( 'timestamp' ) );
+    wp_schedule_event( $next - ( get_option( 'gmt_offset' ) * HOUR_IN_SECONDS ), 'weekly', 'fq_prune_events' );
+}
+
 // ============================================================
 // SERVER-SIDE PROXY
 // ============================================================
@@ -940,6 +1024,31 @@ function fq_analytics_page() {
     $total_clicks = (int)$wpdb->get_var($wpdb->prepare(
         "SELECT COUNT(*) FROM {$table} WHERE event_type = 'card_click' AND event_time >= %s", $since));
     $ctr = $total_completions > 0 ? round(($total_clicks / $total_completions) * 100) : 0;
+
+    // A real conversion rate, from sessions rather than totals.
+    //
+    // The figure above is clicks divided by completions — an aggregate ratio.
+    // It cannot tell one person clicking five cards from five people clicking
+    // one each, and can exceed 100%. This counts distinct visitors who
+    // completed, and how many of those went on to click something.
+    //
+    // Only visitors who accepted analytics cookies carry a session id, so
+    // this is measured on a subset. The share is shown so nobody reads it as
+    // covering everyone.
+    $sessions_completed = (int)$wpdb->get_var($wpdb->prepare(
+        "SELECT COUNT(DISTINCT session_id) FROM {$table}
+          WHERE event_type = 'quiz_complete' AND session_id IS NOT NULL AND event_time >= %s", $since));
+    $sessions_clicked = (int)$wpdb->get_var($wpdb->prepare(
+        "SELECT COUNT(DISTINCT session_id) FROM {$table}
+          WHERE event_type = 'card_click' AND session_id IS NOT NULL AND event_time >= %s
+            AND session_id IN (
+                SELECT session_id FROM (
+                    SELECT DISTINCT session_id FROM {$table}
+                     WHERE event_type = 'quiz_complete' AND session_id IS NOT NULL AND event_time >= %s
+                ) AS completed
+            )", $since, $since));
+    $conversion = $sessions_completed > 0 ? round(($sessions_clicked / $sessions_completed) * 100) : null;
+    $tracked_share = $total_completions > 0 ? round(($sessions_completed / $total_completions) * 100) : 0;
  
     $top_articles = $wpdb->get_results($wpdb->prepare("
         SELECT article_title, article_url, article_topic, article_format, COUNT(*) as clicks
@@ -1006,7 +1115,12 @@ function fq_analytics_page() {
         $cards = [
             ['Quiz completions', $total_completions, '#8F0425'],
             ['Card clicks',      $total_clicks,      '#1C466B'],
-            ['Click-through rate', $ctr.'%',         '#595959'],
+            ['Clicks per completion', $ctr.'%',      '#595959'],
+            [
+                $conversion === null ? 'Clicked something' : 'Clicked something (of ' . $tracked_share . '% tracked)',
+                $conversion === null ? '—' : $conversion.'%',
+                '#59396B'
+            ],
         ];
         foreach ($cards as [$label,$val,$col]): ?>
           <div style="background:#fff;border-radius:10px;padding:18px 20px;box-shadow:0 2px 8px rgba(0,0,0,.07);border-top:4px solid <?php echo $col; ?>">
@@ -1446,6 +1560,61 @@ function finance_quiz_shortcode() {
         }
       }
  
+      // ── Session id, only with analytics consent ──
+      // Links one visitor's quiz completion to the cards they then click, so
+      // the dashboard can show a real conversion rate. Not an identity: a
+      // random value, this visit only, never shared with anyone.
+      //
+      // Consent is read from the site's existing Civic cookie banner. Three
+      // ways, because Civic exposes it differently depending on how it
+      // loaded, and DEFAULTING TO NO if none of them answers. Do not change
+      // that default — no consent means no cookie, which is the legal
+      // position and also the safe one.
+      const SESSION_COOKIE = <?php echo json_encode( FQ_SESSION_COOKIE ); ?>;
+      const SESSION_HOURS  = <?php echo (int) FQ_SESSION_HOURS; ?>;
+
+      function readCookie(name) {
+        const hit = document.cookie.split('; ').find(c => c.startsWith(name + '='));
+        return hit ? decodeURIComponent(hit.slice(name.length + 1)) : '';
+      }
+
+      function hasAnalyticsConsent() {
+        // 1. Civic's own API, when the script has loaded.
+        try {
+          if (typeof CookieControl !== 'undefined' && typeof CookieControl.getCategoryConsent === 'function') {
+            return CookieControl.getCategoryConsent(0) === true;   // 0 = analytics
+          }
+        } catch(_) {}
+        // 2. Civic's cookie, parsed directly.
+        try {
+          const raw = readCookie('CookieControl');
+          if (raw) {
+            const opt = (JSON.parse(raw).optionalCookies) || {};
+            if (opt.analytics) return opt.analytics === 'accepted';
+          }
+        } catch(_) {}
+        // 3. The site's fallback banner.
+        if (readCookie('moneyready_cookie_consent') === 'accepted') return true;
+
+        return false;   // no answer means no consent
+      }
+
+      function sessionId() {
+        if (!hasAnalyticsConsent()) return '';
+        let id = readCookie(SESSION_COOKIE);
+        if (!id) {
+          id = (crypto && crypto.randomUUID)
+            ? crypto.randomUUID()
+            : 'fq-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10);
+          const expires = new Date(Date.now() + SESSION_HOURS * 3600 * 1000).toUTCString();
+          document.cookie = SESSION_COOKIE + '=' + encodeURIComponent(id)
+            + ';path=/;max-age=' + (SESSION_HOURS * 3600)
+            + ';expires=' + expires
+            + ';SameSite=Lax' + (location.protocol === 'https:' ? ';Secure' : '');
+        }
+        return id;
+      }
+
       // ── AJAX helper ──
       // Form-encoded, with the payload as one JSON field. WordPress routes on
       // $_REQUEST['action'] and check_ajax_referer() reads $_REQUEST['nonce'],
@@ -1466,6 +1635,8 @@ function finance_quiz_shortcode() {
 
       // ── Async DB log — fire and forget, zero UX impact ──
       function dbLog(payload) {
+        // Empty string when consent was declined; the server stores nothing.
+        payload.session_id = sessionId();
         // keepalive lets the request finish even if the user navigates away
         postAjax('fq_log', payload, { keepalive: true }).catch(()=>{});
       }
