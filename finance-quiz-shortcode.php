@@ -441,6 +441,28 @@ function fq_truncate_for_prompt($library) {
 // Receives events from the browser after results are shown/clicked.
 // Fires asynchronously — zero impact on user experience.
 // ============================================================
+/**
+ * Decode the JSON payload from a quiz AJAX request.
+ *
+ * Requests are form-encoded, carrying their payload as a single JSON field,
+ * because WordPress routes on `$_REQUEST['action']` (admin-ajax.php line 31)
+ * and `check_ajax_referer()` reads `$_REQUEST['nonce']` — and PHP never
+ * populates `$_POST` from a JSON request body.
+ *
+ * The prototype sent `Content-Type: application/json` with `action` and
+ * `nonce` inside the JSON. admin-ajax.php therefore rejected every request
+ * with HTTP 400 before any handler ran — recommendations, event logging and
+ * the fallback endpoint alike. Verified empirically against this WordPress:
+ * a JSON body returns 400 "0"; the same request form-encoded returns 200.
+ *
+ * Do not "tidy" this back to reading php://input with a JSON content type.
+ */
+function fq_read_payload() {
+    $raw  = isset( $_POST['payload'] ) ? wp_unslash( $_POST['payload'] ) : '';
+    $data = json_decode( (string) $raw, true );
+    return is_array( $data ) ? $data : [];
+}
+
 add_action('wp_ajax_fq_log',        'fq_log_handler');
 add_action('wp_ajax_nopriv_fq_log', 'fq_log_handler');
  
@@ -449,7 +471,7 @@ function fq_log_handler() {
  
     global $wpdb;
     $table = $wpdb->prefix . FQ_DB_TABLE;
-    $raw   = json_decode(file_get_contents('php://input'), true);
+    $raw   = fq_read_payload();
     $type  = sanitize_text_field($raw['event_type'] ?? '');
  
     if (!in_array($type, ['quiz_complete', 'card_click'], true)) {
@@ -495,7 +517,7 @@ add_action('wp_ajax_nopriv_fq_recommend', 'fq_proxy_handler');
  
 function fq_proxy_handler() {
     check_ajax_referer('fq_nonce', 'nonce');
-    $raw     = json_decode(file_get_contents('php://input'), true);
+    $raw     = fq_read_payload();
     $answers = $raw['answers'] ?? [];
  
     if (!fq_check_honeypot($raw))                     { wp_send_json_success(['recs' => fq_get_fallbacks(), 'fallback' => true]); }
@@ -1153,14 +1175,28 @@ function finance_quiz_shortcode() {
         }
       }
  
+      // ── AJAX helper ──
+      // Form-encoded, with the payload as one JSON field. WordPress routes on
+      // $_REQUEST['action'] and check_ajax_referer() reads $_REQUEST['nonce'],
+      // and PHP does not populate $_POST from a JSON request body — so posting
+      // application/json here gets rejected with HTTP 400 before the handler
+      // runs. That is what the prototype did, on every request.
+      function postAjax(action, payload, opts) {
+        return fetch(AJAX, Object.assign({
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' },
+          body: new URLSearchParams({
+            action:  action,
+            nonce:   NONCE,
+            payload: JSON.stringify(payload || {})
+          })
+        }, opts || {}));
+      }
+
       // ── Async DB log — fire and forget, zero UX impact ──
       function dbLog(payload) {
-        fetch(AJAX, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(Object.assign({ action: 'fq_log', nonce: NONCE }, payload)),
-          keepalive: true  // ensures request completes even if user navigates away
-        }).catch(()=>{}); // silently ignore any errors
+        // keepalive lets the request finish even if the user navigates away
+        postAjax('fq_log', payload, { keepalive: true }).catch(()=>{});
       }
  
       // ── Checkbox topic selection ──
@@ -1349,11 +1385,11 @@ function finance_quiz_shortcode() {
         const timer = setTimeout(()=>controller.abort(), 22000);
  
         try {
-          const res = await fetch(AJAX,{
-            method:'POST', signal:controller.signal,
-            headers:{'Content-Type':'application/json'},
-            body:JSON.stringify({action:'fq_recommend',nonce:NONCE,answers:ans,fq_website:'',fq_time_token:TIME_TOKEN})
-          });
+          const res = await postAjax('fq_recommend', {
+            answers:       ans,
+            fq_website:    '',
+            fq_time_token: TIME_TOKEN
+          }, { signal: controller.signal });
           clearTimeout(timer);
           const data = await res.json();
           if(data.success && data.data?.recs?.length) {
@@ -1385,7 +1421,7 @@ function finance_quiz_shortcode() {
           clearTimeout(timer); stopLoading();
           resultType = 'fallback';
           try {
-            const fb = await fetch(AJAX,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'fq_fallback',nonce:NONCE})});
+            const fb = await postAjax('fq_fallback', {});
             const fbData = await fb.json();
             renderCards(fbData.data?.recs||[], true);
           } catch(_) {

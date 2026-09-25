@@ -65,8 +65,8 @@ did not survive contact with the actual content.
    this project.
 
    **Storage:** each synced post becomes one entry in a `fq_social_post`
-   **custom post type**, tagged with the same `library-topic` taxonomy terms
-   the articles use, plus a meta field holding its classification status. This
+   **custom post type**, tagged with the same `topic` taxonomy terms the
+   articles use, plus a meta field holding its classification status. This
    gives a WordPress admin screen for the review queue for free, and means the
    library filter treats articles and social posts identically instead of
    merging two different shapes.
@@ -258,21 +258,69 @@ real code against the local copy of production:
 4. Multi-topic selections behave sensibly (budgeting+spending → 17 items,
    banking+saving+scams → 21).
 5. Description sources across the 50 tagged articles: 29 from Yoast meta
-   descriptions, 21 from the ACF `content` field, **0 falling through to a bare
-   title**.
+   descriptions, 21 resolved from the ACF `content` field. Of those 21, **8
+   (the Car Ready series) contain only the title as a heading**, so they end up
+   described by their title alone — see Content gaps item 1. An earlier note
+   here claimed "0 falling through to a bare title"; that measured source
+   attribution, not outcome, and was misleading.
 6. Whole library serialised for the prompt is ~17KB, roughly 4,300 tokens —
    comfortably within budget, so topic pre-filtering is an optimisation rather
    than a necessity at current content volume.
+7. **A full end-to-end submission succeeds.** Real HTTP POST through
+   `admin-ajax.php`, real Anthropic call, against real content: HTTP 200, five
+   sensible Car Ready recommendations with specific reasons, and the second
+   identical request served from the 24-hour answer cache.
+8. **Analytics logging works**, including `article_topic`, which was empty in
+   every row before finding 2 was fixed. A bad nonce is rejected with 403.
+9. `fq_events` table created correctly by the version-gated
+   `fq_maybe_create_table()`, with `fq_db_version` set to 1.0.
 
-**Still unverified:** the AJAX endpoints, the actual Anthropic API call (no key
-set), the admin dashboard, and the quiz UI in a browser. Those need either a
-real `FQ_API_KEY` or the staging environment.
+**Latency is the open risk: the first call took 20.4s end to end**, against a
+20s `wp_remote_post` timeout and a 22s client-side abort. It succeeded, but
+with almost no margin. See "Model and latency" below.
 
-## Code review findings (full file reviewed — 1029 lines, nothing truncated)
+**Still unverified:** the admin dashboard, and the quiz UI in a real browser.
 
-The audit's "lines 150–879 not yet checked" item is now closed. All seven
-findings are **fixed**; the notes are kept because several describe traps worth
-not falling into again:
+## Model and latency — needs a decision
+
+`claude-opus-5` at `effort: low` produced excellent recommendations but took
+~20.4s end to end (~13-15s of that the API call), which is uncomfortably close
+to the 22s client abort. Three options, none yet chosen:
+
+1. **Keep `claude-opus-5`, raise the timeouts** (server 20s → 30s, client 22s →
+   35s). Best quality, but a 15-20s wait on a spinner is a lot to ask of a
+   visitor.
+2. **Switch to `claude-sonnet-5`.** The task is "pick 5 items from a shortlist
+   of 9 and write a sentence each" — not hard reasoning. Likely
+   indistinguishable output, materially faster and cheaper. This is a
+   deliberate quality/latency trade for Ruth to make, not an automatic one.
+3. **Keep Opus but revisit prompt size.** Unlikely to help much; the library is
+   only ~4,300 tokens and latency is dominated by generation, not input.
+
+Recommendation: try option 2 on staging and compare the actual recommendations
+side by side before deciding. The cost of being wrong is low and reversible.
+
+## Code review findings
+
+The audit's "lines 150–879 not yet checked" item is closed — the whole file has
+been reviewed. All findings below are **fixed**; the notes are kept because
+several describe traps worth not falling into again.
+
+**Finding 8 is the most serious defect found in this project so far** and is
+listed first for that reason.
+
+8. ~~Every AJAX request was rejected before reaching its handler~~ — the
+   browser posted `Content-Type: application/json` with `action` and `nonce`
+   inside the JSON body. WordPress routes on `$_REQUEST['action']`
+   (admin-ajax.php line 31) and `check_ajax_referer()` reads
+   `$_REQUEST['nonce']`, and **PHP never populates `$_POST` from a JSON request
+   body**. Verified empirically: a JSON body returns HTTP 400 `0`; the same
+   request form-encoded returns 200. This affected `fq_recommend`, `fq_log`
+   *and* `fq_fallback` — so the fallback path failed identically, leaving the
+   visitor with the bare "having trouble" text rather than fallback cards, and
+   no event was ever logged. Requests are now form-encoded with the payload
+   carried as a single JSON field (`fq_read_payload()` / `postAjax()`).
+   **Do not "tidy" this back to a JSON content type.**
 
 1. ~~Five of 12 topics unreachable~~ — the `$topic_map` gap. Root cause of the
    critical bug in decision 1.
@@ -314,6 +362,39 @@ not falling into again:
    requests. Confirm with DigitalFootprints whether the site is fronted, and
    if so read the forwarded-for header they set (never trust a client-supplied
    one).
+
+## Known open issues (found 2026-09-25, not yet fixed)
+
+Surfaced by a documentation pass over the code. None are blocking; recorded so
+they are not rediscovered from scratch.
+
+1. **One hardcoded social post is unreachable.** "Nobody tells you this stuff
+   before getting your first mortgage" is tagged `property`, which is a
+   `planned` (hidden) topic. Since the quiz requires at least one topic and
+   never offers `property`, no answer combination can surface it. Resolves
+   itself when `property` goes live or the Buffer sync replaces the hardcoded
+   array.
+2. **The answer cache is not invalidated on publish.** `save_post` clears the
+   library transient but not stored recommendation sets, so a newly published
+   article can be missing from recommendations for up to 24 hours for any
+   answer combination already cached.
+3. **`save_post` only fires on `post_status === 'publish'`.** Unpublishing or
+   trashing an article does not clear the library cache, so it can keep being
+   recommended for up to an hour.
+4. **Card clicks record only the first topic.** The JS sends `r.topics[0]`, so
+   the dashboard's Topic column under-reports multi-topic articles.
+5. **GA4 events fire only if `gtag` is already defined**, and the tool never
+   loads it. If the theme does not load GA4 on the quiz page, no GA4 event is
+   sent — silently. The database logging is unaffected.
+6. **The timing token has no upper age bound.** `fq_check_timing()` checks only
+   that at least `FQ_MIN_TIME` seconds have passed, never that the token is
+   recent. This compounds the page-caching problem: a cached page serves an
+   ageing token that stays valid indefinitely.
+7. **Unverified:** whether the `topic` taxonomy holds terms beyond the ten
+   mapped in `topics.json`. An article tagged only with an unmapped term is
+   silently dropped from the library. Worth a periodic check as content grows.
+8. **Unverified:** whether the four hardcoded fallback URLs in
+   `fq_get_fallbacks()` still resolve on the live site.
 
 ## Working style
 
