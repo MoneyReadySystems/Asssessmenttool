@@ -39,6 +39,14 @@ if ( ! defined( 'FQ_MODEL' ) )              define( 'FQ_MODEL',             'cla
 if ( ! defined( 'FQ_POST_TYPE' ) )          define( 'FQ_POST_TYPE',         'library' );
 if ( ! defined( 'FQ_TOPIC_TAXONOMY' ) )     define( 'FQ_TOPIC_TAXONOMY',    'topic' );
 if ( ! defined( 'FQ_TOPICS_FILE' ) )        define( 'FQ_TOPICS_FILE',       'topics.json' );
+if ( ! defined( 'FQ_PROMPT_FILE' ) )        define( 'FQ_PROMPT_FILE',       'prompt.md' );
+// Server-side wait for the Anthropic call, and the browser's own abort. The
+// browser must allow longer than the server, or it gives up on a request that
+// would have succeeded. Measured on the local dev stack: ~6s of that is the
+// API, the rest WordPress overhead, which is far slower on Local than on real
+// hosting. Re-measure on staging before tightening these.
+if ( ! defined( 'FQ_API_TIMEOUT' ) )        define( 'FQ_API_TIMEOUT',       30 );
+if ( ! defined( 'FQ_CLIENT_TIMEOUT' ) )     define( 'FQ_CLIENT_TIMEOUT',    35 );
 if ( ! defined( 'FQ_CACHE_KEY' ) )          define( 'FQ_CACHE_KEY',         'fq_content_library' );
 if ( ! defined( 'FQ_CACHE_DURATION' ) )     define( 'FQ_CACHE_DURATION',    HOUR_IN_SECONDS );
 if ( ! defined( 'FQ_ANSWER_CACHE_TTL' ) )   define( 'FQ_ANSWER_CACHE_TTL',  DAY_IN_SECONDS );
@@ -128,6 +136,73 @@ function fq_get_fallback_topics() {
             'taxonomy_terms' => [ $t[3] ],
         ];
     }, $fallback );
+}
+
+/**
+ * The recommendation prompt template, read from prompt.md.
+ *
+ * Everything in that file above the `--- PROMPT ---` marker is guidance for
+ * whoever edits it and is stripped here, so notes can be kept alongside the
+ * prompt without being sent to Claude or billed for.
+ *
+ * Falls back to a built-in template if the file is missing, unreadable, or has
+ * lost its {{LIBRARY}} placeholder — without the library Claude would have
+ * nothing to choose from, which is worse than ignoring the file.
+ */
+function fq_get_prompt_template() {
+    static $template = null;
+    if ( $template !== null ) return $template;
+
+    $path = __DIR__ . '/' . FQ_PROMPT_FILE;
+    $raw  = is_readable( $path ) ? file_get_contents( $path ) : false;
+
+    if ( $raw !== false ) {
+        // Keep only what follows the marker, if the marker is present.
+        $parts = preg_split( '/^---\s*PROMPT\s*---\s*$/m', $raw, 2 );
+        $body  = trim( $parts[1] ?? $parts[0] ?? '' );
+
+        if ( $body !== '' && strpos( $body, '{{LIBRARY}}' ) !== false ) {
+            return $template = $body;
+        }
+
+        error_log( sprintf(
+            '[finance-quiz] %s is missing its {{LIBRARY}} placeholder — ignoring it and using the built-in prompt. Edits to that file will have no effect until this is fixed.',
+            $path
+        ) );
+    } else {
+        error_log( sprintf( '[finance-quiz] Could not read %s — using the built-in prompt.', $path ) );
+    }
+
+    return $template = fq_get_fallback_prompt();
+}
+
+/** Safety net if prompt.md is missing or malformed. Keep in step with it. */
+function fq_get_fallback_prompt() {
+    return "You are recommending financial education content for Money Ready, a UK\n"
+         . "financial education charity.\n\n"
+         . "{{COUNT_INSTRUCTION}} from the library below, based on what this person told us.\n\n"
+         . "WHAT THEY TOLD US\n"
+         . "- Topics: {{TOPICS}}\n"
+         . "- How confident they feel with money: {{EXPERIENCE}}\n"
+         . "- Their main goal: {{GOAL}}\n"
+         . "- How they prefer to learn: {{FORMAT}}\n\n"
+         . "CHOOSING\n"
+         . "- Only recommend items from the library. Copy each url exactly. Never invent one.\n"
+         . "- Lead with what best matches their goal.\n\n"
+         . "THE REASON, one per item\n"
+         . "- One short sentence, speaking to them as \"you\".\n"
+         . "- Say why it suits what they told us, not what the item covers.\n"
+         . "- Warm and plain, never patronising. UK English.\n\n"
+         . "LIBRARY\n{{LIBRARY}}";
+}
+
+/** Fill the template's placeholders. Values are substituted literally. */
+function fq_build_prompt( array $vars ) {
+    $template = fq_get_prompt_template();
+    foreach ( $vars as $key => $value ) {
+        $template = str_replace( '{{' . $key . '}}', (string) $value, $template );
+    }
+    return $template;
 }
 
 /** WordPress taxonomy slug => quiz topic slug. Replaces the old $topic_map. */
@@ -587,12 +662,16 @@ function fq_proxy_handler() {
         ? "Recommend the {$max_recs} most relevant item(s)"
         : "Recommend between {$min_recs} and {$max_recs} of the MOST relevant items";
 
-    $prompt = "You are a financial education content recommender for Money Ready, a UK financial education charity.\n"
-            . "{$how_many} from the library below, based on the user's quiz answers.\n"
-            . "Only recommend items that appear in the library. Never invent a title or a URL.\n"
-            . "Copy each url exactly as it appears in the library.\n\n"
-            . "USER ANSWERS:\n- Topics: {$topics}\n- Knowledge level: {$experience}\n- Goal: {$goal}\n- Preferred format: {$format}\n\n"
-            . "CONTENT LIBRARY:\n" . wp_json_encode($prompt_library);
+    // The prompt lives in prompt.md so its wording and tone can be changed
+    // without a code change or a deploy. See that file for what is editable.
+    $prompt = fq_build_prompt([
+        'COUNT_INSTRUCTION' => $how_many,
+        'TOPICS'            => $topics,
+        'EXPERIENCE'        => $experience,
+        'GOAL'              => $goal,
+        'FORMAT'            => $format,
+        'LIBRARY'           => wp_json_encode($prompt_library),
+    ]);
 
     // Structured output. The prototype asked for JSON in prose, stripped
     // markdown fences with a regex and hoped the result parsed; a schema makes
@@ -621,7 +700,7 @@ function fq_proxy_handler() {
     ];
 
     $response = wp_remote_post('https://api.anthropic.com/v1/messages', [
-        'timeout' => 20,
+        'timeout' => FQ_API_TIMEOUT,
         'headers' => [
             'Content-Type'      => 'application/json',
             'x-api-key'         => FQ_API_KEY,
@@ -1161,6 +1240,9 @@ function finance_quiz_shortcode() {
       const NONCE      = <?php echo json_encode($nonce); ?>;
       const TIME_TOKEN = <?php echo json_encode($time_token); ?>;
       const GA4_ID     = <?php echo json_encode($ga4_id); ?>;
+      // Must exceed the server's own API timeout, or the browser abandons a
+      // request that would have come back.
+      const CLIENT_TIMEOUT_MS = <?php echo (int) FQ_CLIENT_TIMEOUT * 1000; ?>;
       const STEPS      = 4;
       const LOAD_MSGS  = ['Searching our library…','Matching to your goals…','Checking your preferences…','Almost there…'];
       let ans = {topics:[], experience:null, goal:null, format:null};
@@ -1382,7 +1464,7 @@ function finance_quiz_shortcode() {
         startLoading();
  
         const controller = new AbortController();
-        const timer = setTimeout(()=>controller.abort(), 22000);
+        const timer = setTimeout(()=>controller.abort(), CLIENT_TIMEOUT_MS);
  
         try {
           const res = await postAjax('fq_recommend', {
