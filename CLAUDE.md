@@ -229,23 +229,65 @@ verification:
 4. `library-type` contains only abandoned placeholder terms ("Type A",
    "Type C", zero posts each). It is not a usable source of anything.
 
-## YouTube
+## YouTube — resolved: no separate integration needed
 
-- Channel: **@MoneyReadyUK**, channel ID **`UCv32RKUXnmL7EL3n1SZkm5g`**
-- Feed: `https://www.youtube.com/feeds/videos.xml?channel_id=UCv32RKUXnmL7EL3n1SZkm5g`
-- **No credentials, no quota, no Google Cloud project.** Verified working
-  2026-09-25: HTTP 200, 15 entries, each carrying title, link, `published`,
-  `updated`, `media:description` (the full video description),
-  `media:thumbnail` and `media:statistics`. That is everything the library
-  needs, so the YouTube Data API is not required.
-- **Limit: the feed only ever returns the 15 most recent videos.** Fine for
-  keeping up; no use for backfilling an older catalogue. If the back
-  catalogue is ever needed, that is the point to reach for the Data API and
-  accept the Google Cloud setup.
-- Open question: whether YouTube content is also published through Buffer.
-  If so, the same video arrives by two routes and de-duplication (decision 5)
-  handles it. Answer this by comparing the Buffer `channels` list against the
-  feed once a Buffer key exists.
+**YouTube is published through Buffer**, so it arrives with everything else.
+Verified 2026-09-25 by comparing Buffer against the channel's RSS feed: of the
+9 videos published in the overlapping window, **all 9 were in Buffer**. Nothing
+was missing.
+
+So: **do not build a YouTube integration.** No RSS parser, no Data API, no
+Google Cloud project, no second credential. One integration covers everything.
+
+Kept for reference in case that ever changes:
+
+- Channel **@MoneyReadyUK**, id `UCv32RKUXnmL7EL3n1SZkm5g`
+- Feed `https://www.youtube.com/feeds/videos.xml?channel_id=UCv32RKUXnmL7EL3n1SZkm5g`
+  — no credentials, returns the 15 most recent with title, link, published
+  date, full description and thumbnail. Useful only if YouTube publishing ever
+  moves off Buffer, or to backfill videos older than Buffer's history.
+
+## Buffer: what the real data looks like (sampled 2026-09-25)
+
+Organisation id `65e74b698f9c10d39cc7392c`. **400 sent posts sampled**,
+covering 2026-04-14 to 2026-09-24 — roughly 80 posts a month.
+
+**Seven channels connected**, all healthy: instagram, linkedin, facebook,
+tiktok, bluesky, youtube, twitter.
+
+| Service | Posts in sample |
+|---|---|
+| instagram | 205 |
+| linkedin | 88 |
+| facebook | 52 |
+| tiktok | 37 |
+| bluesky | 9 |
+| youtube | 9 |
+
+**The fields that matter** (from schema introspection, not the docs, which
+omit them):
+
+- `text` — the post copy, and all the classifier gets to read
+- `externalLink` — the permalink. Populated on every post in the sample
+- `channelService` — the platform, directly on the post, no join needed
+- `sentAt` — publication time
+- also available: `assets`, `metrics`, `status`, `author`, `tags`
+
+**Three things the sync must handle, all measured:**
+
+1. **Cross-posting is heavy.** 400 posts represent only **233 distinct pieces
+   of content**. 62 items were posted to more than one channel, accounting for
+   157 posts. Without de-duplication a visitor could be shown the same savings
+   tip from TikTok *and* Instagram on one results page. De-duplicate on
+   normalised post text, not URL — the URLs differ per channel.
+2. **Roughly a fifth of posts are unusable**: 72 have empty `text` (nothing
+   for the classifier to read), 22 are stories whose links expire after 24
+   hours, and 11 have no `externalLink`. 314 of 400 are usable at all.
+3. **Volume planning.** 233 unique items per 5 months, against a documented
+   comfort ceiling of 100–120 URLs in the prompt. Classification should
+   remove most of it — the sample is dominated by fundraising, awards and
+   programme news rather than learning content — but if it does not, topic
+   pre-filtering is what keeps the per-request prompt small.
 
 ## Local development environment
 
