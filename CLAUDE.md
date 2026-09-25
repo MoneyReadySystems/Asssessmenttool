@@ -60,9 +60,30 @@ did not survive contact with the actual content.
 
 2. **Automated social post ingestion.** Use the **Buffer API** on a daily
    WP-Cron sync job, instead of hardcoding posts (`fq_get_social_posts()`) or
-   making live API calls per request. Buffer's API is available on all plans
-   including free. Metricool was considered and rejected — not required for
-   this project.
+   making live API calls per request. Metricool was considered and rejected —
+   not required for this project.
+
+   **Buffer's API is GraphQL, not REST** (verified against the live docs
+   2026-09-25; the API is badged "New", so older REST knowledge is stale).
+   Everything goes to a single `POST https://api.buffer.com` with
+   `Authorization: Bearer <token>`. The two queries needed:
+
+   ```graphql
+   query { channels(input: { organizationId: "..." }) {
+     id name displayName service avatar isQueuePaused } }
+
+   query { posts(input: {
+     organizationId: "..."
+     sort:   [{ field: dueAt, direction: desc }]
+     filter: { status: sent, channelIds: ["..."] }
+   }) { edges { node { id text createdAt channelId } } } }
+   ```
+
+   `service` distinguishes YouTube, Instagram, TikTok etc, which is what
+   supplies each post's format. `organizationId` comes from a
+   `GetOrganizations` query. The full field list on a post — media,
+   permalink, sent timestamp — is **not** in the docs; get it by GraphQL
+   introspection against a real key rather than guessing.
 
    **Storage:** each synced post becomes one entry in a `fq_social_post`
    **custom post type**, tagged with the same `topic` taxonomy terms the
@@ -82,6 +103,22 @@ did not survive contact with the actual content.
    that file immediately becomes available to the classifier. Claude never
    invents topic names.
 
+   **This step is load-bearing, not a safeguard.** Measured against the live
+   YouTube feed on 2026-09-25: of the 15 most recent videos, only about four
+   are learning content. The rest are media appearances and organisational
+   updates — ITV News Central, BBC Radio Solent, Voice of Islam, school
+   visits, "Change the Game on the road". Without classification a visitor
+   asking about budgeting could be recommended a radio interview. Do not
+   treat this as an optional refinement to add later.
+
+5. **De-duplicate across sources.** Two of the four learning videos in that
+   feed are already in the recommendation pool by another route: "The Big
+   Money Lesson: Borrowing" is a Learning Hub `library` item, and "How to
+   avoid overspending online" is one of the hardcoded social posts. Without
+   de-duplication the same video can be recommended twice on one results
+   page. Match on the resolved destination URL, normalising YouTube forms
+   (`youtu.be/ID`, `youtube.com/watch?v=ID`, `youtube.com/shorts/ID`).
+
 4. **Session tracking.** Add a first-party cookie session ID so post-quiz
    learner journeys can be tracked across Learning Hub pages (extends the
    existing `wp_fq_events` anonymous event table).
@@ -92,12 +129,19 @@ did not survive contact with the actual content.
   plugin/theme PHP files that get committed. `FQ_API_KEY` and
   `FQ_GA4_MEASUREMENT_ID` are currently unset placeholders in the prototype
   and need real values set there, not hardcoded.
-- **Buffer's personal API token has no read-only scope restriction.**
-  Mitigations, in order:
-  1. Use a dedicated limited team member account, not the primary owner's
-  2. Write the sync job as a structurally narrow function calling only one
-     GET endpoint — don't give it broader Buffer access than it needs
-  3. Rotate the key periodically
+- **Buffer's personal API token has no read-only scope restriction, and the
+  GraphQL API makes this worse than the audit assumed.** The original
+  mitigation was "call only one GET endpoint". That reasoning does not
+  survive GraphQL: there is exactly one endpoint, it is a POST, and the same
+  endpoint that reads posts can also create and delete them. Narrowness has
+  to come from the query text instead. Revised mitigations, in order:
+  1. Use a dedicated limited team member account, not the primary owner's.
+     This matters **more** now, not less, since the endpoint restriction is
+     no longer available as a control.
+  2. Hardcode the read query as a constant string. Never build it from
+     anything outside the function, and never accept a query, fragment or
+     variable set from a caller.
+  3. Rotate the key periodically.
 - `.gitignore` must exclude `wp-config.php` before the first commit that adds
   any real config file — order matters, since removing a file from tracking
   later doesn't purge it from git history.
@@ -184,6 +228,24 @@ verification:
    description chain handles it — but worth knowing they are unused.
 4. `library-type` contains only abandoned placeholder terms ("Type A",
    "Type C", zero posts each). It is not a usable source of anything.
+
+## YouTube
+
+- Channel: **@MoneyReadyUK**, channel ID **`UCv32RKUXnmL7EL3n1SZkm5g`**
+- Feed: `https://www.youtube.com/feeds/videos.xml?channel_id=UCv32RKUXnmL7EL3n1SZkm5g`
+- **No credentials, no quota, no Google Cloud project.** Verified working
+  2026-09-25: HTTP 200, 15 entries, each carrying title, link, `published`,
+  `updated`, `media:description` (the full video description),
+  `media:thumbnail` and `media:statistics`. That is everything the library
+  needs, so the YouTube Data API is not required.
+- **Limit: the feed only ever returns the 15 most recent videos.** Fine for
+  keeping up; no use for backfilling an older catalogue. If the back
+  catalogue is ever needed, that is the point to reach for the Data API and
+  accept the Google Cloud setup.
+- Open question: whether YouTube content is also published through Buffer.
+  If so, the same video arrives by two routes and de-duplication (decision 5)
+  handles it. Answer this by comparing the Buffer `channels` list against the
+  feed once a Buffer key exists.
 
 ## Local development environment
 
